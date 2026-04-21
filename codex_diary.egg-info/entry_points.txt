@@ -1,0 +1,4 @@
+[console_scripts]
+codex-diary = codex_diary.cli:main
+codex-diary-app = codex_diary.app:main
+codex-diary-package-macos = codex_diary.package_macos:main

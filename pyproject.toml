@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-diary"
+version = "0.1.0"
+description = "Generate Korean work diary drafts from Chronicle Markdown summaries."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  { name = "Codex" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+macos-build = ["pyinstaller>=6.11,<7"]
+
+[project.scripts]
+codex-diary = "codex_diary.cli:main"
+codex-diary-app = "codex_diary.app:main"
+codex-diary-package-macos = "codex_diary.package_macos:main"
+
+[tool.setuptools]
+packages = ["codex_diary"]
