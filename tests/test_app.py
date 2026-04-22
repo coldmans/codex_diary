@@ -233,6 +233,8 @@ class DiaryBridgeTests(unittest.TestCase):
         self.assertTrue(payload["codex"]["connected"])
         self.assertTrue(payload["generation_available"])
         self.assertIn("생성", payload["status"])
+        self.assertEqual(payload["progress"]["status"], "idle")
+        self.assertEqual(payload["progress"]["percent"], 0)
 
     def test_generate_returns_views_and_saves_file(self) -> None:
         bridge = DiaryBridge()
@@ -272,6 +274,9 @@ class DiaryBridgeTests(unittest.TestCase):
         self.assertTrue(target.exists())
         self.assertIn("structured", payload)
         self.assertTrue(payload["structured"]["has_diary"])
+        self.assertEqual(payload["progress"]["status"], "completed")
+        self.assertEqual(payload["progress"]["phase"], "finish")
+        self.assertEqual(payload["progress"]["percent"], 100)
 
     def test_generate_blocks_when_codex_is_not_connected(self) -> None:
         bridge = DiaryBridge()
@@ -299,6 +304,7 @@ class DiaryBridgeTests(unittest.TestCase):
         build_mock.assert_not_called()
         self.assertEqual(payload["error"], "먼저 codex를 연결해주세요.")
         self.assertFalse(payload["generation_available"])
+        self.assertEqual(payload["progress"]["status"], "failed")
 
     def test_generate_passes_output_language_to_builder(self) -> None:
         bridge = DiaryBridge()
@@ -333,6 +339,26 @@ class DiaryBridgeTests(unittest.TestCase):
         self.assertEqual(build_mock.call_args.kwargs["output_language"], "ja")
         self.assertEqual(payload["output_language_code"], "ja")
         self.assertEqual(payload["output_language"], "Japanese")
+
+    def test_generate_returns_failed_progress_when_builder_errors(self) -> None:
+        bridge = DiaryBridge()
+
+        with patch.object(bridge, "_codex_status_details", return_value=self.CONNECTED_STATUS):
+            with patch("codex_diary.app.build_diary", side_effect=FileNotFoundError("missing summaries")):
+                payload = bridge.generate(
+                    {
+                        "target_date": "2026-04-21",
+                        "boundary_hour": 4,
+                        "mode": "finalize",
+                        "source_dir": "/tmp/codex-diary-source",
+                        "out_dir": "/tmp/codex-diary-out",
+                        "auto_save": True,
+                    }
+                )
+
+        self.assertEqual(payload["error"], "missing summaries")
+        self.assertEqual(payload["progress"]["status"], "failed")
+        self.assertEqual(payload["progress"]["phase"], "collect")
 
     def test_connect_codex_launches_device_auth_on_macos(self) -> None:
         bridge = DiaryBridge()

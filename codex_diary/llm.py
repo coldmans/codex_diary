@@ -1,23 +1,29 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-from typing import Optional
+import time
+from typing import Any, Optional
 
 
 CODEX_NOT_CONNECTED_MESSAGE = "먼저 codex를 연결해주세요."
 CODEX_MISSING_MESSAGE = "먼저 codex를 연결해주세요. Codex CLI를 찾지 못했습니다."
 CODEX_LOGIN_LAUNCHED_MESSAGE = "Codex 로그인 창을 열었어요. 연결이 끝나면 다시 생성해 주세요."
 CODEX_EXEC_TIMEOUT_SECONDS = 240
+CODEX_PROGRESS_HEARTBEAT_SECONDS = 0.8
 COMMON_CODEX_PATHS = (
     "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
     "/usr/bin/codex",
     "~/.local/bin/codex",
 )
+
+ProviderProgressCallback = Callable[[dict[str, Any]], None]
+CancellationCheck = Callable[[], bool]
 
 
 class LLMError(RuntimeError):
@@ -26,6 +32,10 @@ class LLMError(RuntimeError):
 
 class CodexConnectionError(LLMError):
     """Raised when Codex CLI is not available or not logged in."""
+
+
+class GenerationCancelledError(LLMError):
+    """Raised when an in-flight generation is cancelled by the user."""
 
 
 @dataclass(frozen=True)
@@ -49,7 +59,14 @@ class CodexStatus:
 
 
 class LLMProvider:
-    def generate_markdown(self, prompt: str, *, output_language: str | None = None) -> str:
+    def generate_markdown(
+        self,
+        prompt: str,
+        *,
+        output_language: str | None = None,
+        progress: Optional[ProviderProgressCallback] = None,
+        should_cancel: Optional[CancellationCheck] = None,
+    ) -> str:
         raise NotImplementedError
 
 
@@ -162,10 +179,40 @@ class CodexCliProvider(LLMProvider):
         self.command = command
         self.timeout_seconds = timeout_seconds
 
-    def generate_markdown(self, prompt: str, *, output_language: str | None = None) -> str:
+    @staticmethod
+    def _emit_progress(
+        progress: Optional[ProviderProgressCallback],
+        *,
+        detail_key: str,
+        percent: int,
+        indeterminate: bool = False,
+    ) -> None:
+        if progress is None:
+            return
+        progress(
+            {
+                "status": "running",
+                "phase": "write",
+                "step_key": "loading.step.write",
+                "detail_key": detail_key,
+                "percent": percent,
+                "indeterminate": indeterminate,
+            }
+        )
+
+    def generate_markdown(
+        self,
+        prompt: str,
+        *,
+        output_language: str | None = None,
+        progress: Optional[ProviderProgressCallback] = None,
+        should_cancel: Optional[CancellationCheck] = None,
+    ) -> str:
         with tempfile.TemporaryDirectory(prefix="codex-diary-codex-") as tmpdir:
             tmp_path = Path(tmpdir)
             output_path = tmp_path / "final.md"
+            stdout_path = tmp_path / "stdout.log"
+            stderr_path = tmp_path / "stderr.log"
             cmd = [
                 self.command,
                 "exec",
@@ -178,22 +225,83 @@ class CodexCliProvider(LLMProvider):
                 str(output_path),
                 "-",
             ]
+            self._emit_progress(
+                progress,
+                detail_key="loading.detail.writePrepare",
+                percent=70,
+            )
+            if should_cancel is not None and should_cancel():
+                raise GenerationCancelledError("생성을 취소했어요.")
             try:
-                proc = subprocess.run(
-                    cmd,
-                    input=prompt,
-                    text=True,
-                    capture_output=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                )
+                with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open(
+                    "w", encoding="utf-8"
+                ) as stderr_handle:
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=stdout_handle,
+                        stderr=stderr_handle,
+                        text=True,
+                    )
+                    self._emit_progress(
+                        progress,
+                        detail_key="loading.detail.writeStart",
+                        percent=74,
+                    )
+                    stdin_handle = proc.stdin
+                    try:
+                        if stdin_handle is not None:
+                            stdin_handle.write(prompt)
+                    except BrokenPipeError:
+                        pass
+                    finally:
+                        if stdin_handle is not None:
+                            try:
+                                stdin_handle.close()
+                            except BrokenPipeError:
+                                pass
+
+                    self._emit_progress(
+                        progress,
+                        detail_key="loading.detail.writeWait",
+                        percent=78,
+                        indeterminate=True,
+                    )
+                    deadline = time.monotonic() + self.timeout_seconds
+                    next_heartbeat = time.monotonic() + CODEX_PROGRESS_HEARTBEAT_SECONDS
+                    while proc.poll() is None:
+                        if should_cancel is not None and should_cancel():
+                            proc.kill()
+                            proc.wait(timeout=5)
+                            raise GenerationCancelledError("생성을 취소했어요.")
+                        now = time.monotonic()
+                        if now >= deadline:
+                            proc.kill()
+                            proc.wait(timeout=5)
+                            raise LLMError("Codex 응답이 너무 오래 걸리고 있어요. 잠시 후 다시 시도해 주세요.")
+                        if now >= next_heartbeat:
+                            self._emit_progress(
+                                progress,
+                                detail_key="loading.detail.writeWait",
+                                percent=78,
+                                indeterminate=True,
+                            )
+                            next_heartbeat = now + CODEX_PROGRESS_HEARTBEAT_SECONDS
+                        time.sleep(0.1)
+                    return_code = proc.returncode
             except FileNotFoundError as exc:
                 raise CodexConnectionError(CODEX_MISSING_MESSAGE) from exc
-            except subprocess.TimeoutExpired as exc:
-                raise LLMError("Codex 응답이 너무 오래 걸리고 있어요. 잠시 후 다시 시도해 주세요.") from exc
 
-            if proc.returncode != 0:
-                combined = "\n".join(part for part in (proc.stderr.strip(), proc.stdout.strip()) if part).strip()
+            self._emit_progress(
+                progress,
+                detail_key="loading.detail.writeCheck",
+                percent=84,
+            )
+            stdout_text = stdout_path.read_text(encoding="utf-8").strip() if stdout_path.exists() else ""
+            stderr_text = stderr_path.read_text(encoding="utf-8").strip() if stderr_path.exists() else ""
+
+            if return_code != 0:
+                combined = "\n".join(part for part in (stderr_text, stdout_text) if part).strip()
                 normalized = combined.lower()
                 if "not logged in" in normalized or "login required" in normalized or "invalid refresh token" in normalized:
                     raise CodexConnectionError(CODEX_NOT_CONNECTED_MESSAGE)
@@ -202,6 +310,11 @@ class CodexCliProvider(LLMProvider):
 
             if not output_path.exists():
                 raise LLMError("Codex 응답 파일을 찾지 못했습니다.")
+            self._emit_progress(
+                progress,
+                detail_key="loading.detail.writeReady",
+                percent=88,
+            )
             markdown = output_path.read_text(encoding="utf-8").strip()
             if not markdown:
                 raise LLMError("Codex가 비어 있는 응답을 돌려줬어요.")

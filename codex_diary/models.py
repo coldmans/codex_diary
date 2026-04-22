@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
 
 @dataclass(frozen=True)
@@ -32,5 +32,5 @@ class DiaryBuildResult:
     markdown: str
     output_path: Path
     used_llm: bool
-    stats: Dict[str, int] = field(default_factory=dict)
+    stats: Dict[str, Any] = field(default_factory=dict)
     warnings: Tuple[str, ...] = ()

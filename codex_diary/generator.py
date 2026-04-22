@@ -1,17 +1,30 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime
 from difflib import SequenceMatcher
+import inspect
 from pathlib import Path
 import re
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
+from .diary_length import DEFAULT_DIARY_LENGTH_CODE, normalize_diary_length
 from .chronicle import discover_sources, get_local_timezone, split_sources_by_granularity
 from .i18n import get_language_option, heading_labels
-from .llm import LLMError, LLMProvider, load_provider_from_codex
+from .llm import GenerationCancelledError, LLMError, LLMProvider, load_provider_from_codex
 from .models import ChronicleSource, DiaryBuildResult, Event
 from .parser import extract_events
+
+LLM_PROMPT_EVENT_LIMIT = 120
+LLM_PROMPT_EVENT_TEXT_LIMIT = 240
+LLM_PROMPT_SECTION_TITLE_LIMIT = 72
+LLM_PROMPT_CHAR_BUDGET = 18000
+LLM_PROMPT_PINNED_PER_TAG = 2
+PROMPT_PRIORITY_TAGS = ("decision", "blocker", "next_action")
+PRIMARY_COVERAGE_BUCKET_MINUTES = 120
+MIN_PRIMARY_SPAN_HOURS = 6
+DEDUPLICATION_WINDOW_MINUTES = 90
+DEDUPLICATION_WINDOW_WITH_6H_MINUTES = 390
 
 APP_STOPWORDS = {
     "Codex",
@@ -75,6 +88,56 @@ CANONICAL_SECTION_HEADINGS = {
     "blockers": "### 막혔던 점 또는 미해결 이슈",
     "tomorrow": "### 내일 할 일",
     "reflection": "### 짧은 회고",
+}
+
+ProgressCallback = Callable[[dict[str, Any]], None]
+CancellationCheck = Callable[[], bool]
+
+DIARY_LENGTH_PROFILES: dict[str, dict[str, Any]] = {
+    "short": {
+        "activity_limit": 5,
+        "decision_limit": 4,
+        "blocker_limit": 4,
+        "next_action_limit": 4,
+        "timeline_limit": 14,
+        "prompt_event_limit": 120,
+        "prompt_char_budget": 18000,
+        "diary_paragraph_instruction": "2-4 short paragraphs",
+        "guidance": "Keep the report concise and the diary gently compact.",
+    },
+    "medium": {
+        "activity_limit": 6,
+        "decision_limit": 5,
+        "blocker_limit": 5,
+        "next_action_limit": 5,
+        "timeline_limit": 22,
+        "prompt_event_limit": 150,
+        "prompt_char_budget": 22000,
+        "diary_paragraph_instruction": "3-5 medium paragraphs",
+        "guidance": "Make the diary clearly fuller than the short version, with a bit more connective detail.",
+    },
+    "long": {
+        "activity_limit": 8,
+        "decision_limit": 6,
+        "blocker_limit": 6,
+        "next_action_limit": 6,
+        "timeline_limit": 32,
+        "prompt_event_limit": 190,
+        "prompt_char_budget": 28000,
+        "diary_paragraph_instruction": "4-6 fairly full paragraphs",
+        "guidance": "Keep the timeline rich and let the diary linger on transitions, comparisons, and context recovery.",
+    },
+    "very-long": {
+        "activity_limit": 10,
+        "decision_limit": 8,
+        "blocker_limit": 8,
+        "next_action_limit": 8,
+        "timeline_limit": 44,
+        "prompt_event_limit": 240,
+        "prompt_char_budget": 36000,
+        "diary_paragraph_instruction": "6-8 full paragraphs",
+        "guidance": "Be exhaustive while staying factual, and preserve many small but real context switches and follow-up checks.",
+    },
 }
 
 OUTPUT_LANGUAGE_SPECS: dict[str, dict[str, Any]] = {
@@ -1063,7 +1126,25 @@ def normalize_output_language(
     default: str = DEFAULT_OUTPUT_LANGUAGE,
 ) -> str:
     if value is None:
-        return default
+    return default
+
+
+def normalize_diary_length_code(
+    value: str | None,
+    *,
+    default: str = DEFAULT_DIARY_LENGTH_CODE,
+) -> str:
+    return normalize_diary_length(value, default=default) or default
+
+
+def diary_length_profile(length: str | None) -> dict[str, Any]:
+    code = normalize_diary_length_code(length)
+    return DIARY_LENGTH_PROFILES[code]
+
+
+def raise_if_cancelled(should_cancel: Optional[CancellationCheck]) -> None:
+    if should_cancel is not None and should_cancel():
+        raise GenerationCancelledError("생성을 취소했어요.")
     normalized = str(value).strip().lower()
     if not normalized:
         return default
@@ -1175,6 +1256,27 @@ def similarity_signatures(normalized: str, tokens: set[str]) -> tuple[tuple[str,
     return tuple(dict.fromkeys(signatures))
 
 
+def event_sort_key(event: Event) -> tuple[datetime, int, str]:
+    return (
+        event.source.recorded_at_local,
+        event.order,
+        event.source.path.as_posix(),
+    )
+
+
+def event_gap_minutes(left: Event, right: Event) -> float:
+    delta = left.source.recorded_at_local - right.source.recorded_at_local
+    return abs(delta.total_seconds()) / 60
+
+
+def dedupe_window_minutes(left: Event, right: Event) -> int:
+    if left.source.path == right.source.path:
+        return DEDUPLICATION_WINDOW_WITH_6H_MINUTES
+    if "6h" in {left.source.granularity, right.source.granularity}:
+        return DEDUPLICATION_WINDOW_WITH_6H_MINUTES
+    return DEDUPLICATION_WINDOW_MINUTES
+
+
 def dedupe_events(events: Iterable[Event]) -> list[Event]:
     ordered = sorted(
         events,
@@ -1196,7 +1298,8 @@ def dedupe_events(events: Iterable[Event]) -> list[Event]:
             candidate_indices.update(buckets.get(signature, ()))
 
         duplicate = any(
-            are_events_similar_preprocessed(
+            event_gap_minutes(candidate, unique[index]) <= dedupe_window_minutes(candidate, unique[index])
+            and are_events_similar_preprocessed(
                 normalized,
                 tokens,
                 unique_meta[index][0],
@@ -1210,20 +1313,83 @@ def dedupe_events(events: Iterable[Event]) -> list[Event]:
             buckets.setdefault(signature, []).append(len(unique))
         unique.append(candidate)
         unique_meta.append((normalized, tokens))
-    return sorted(unique, key=lambda event: (event.source.recorded_at_local, event.order))
+    return sorted(unique, key=event_sort_key)
 
 
-def load_events(sources: Iterable[ChronicleSource]) -> list[Event]:
+def load_events(
+    sources: Iterable[ChronicleSource],
+    *,
+    on_source_loaded: Optional[Callable[[ChronicleSource, int, int], None]] = None,
+) -> list[Event]:
+    ordered_sources = list(sources)
     events: list[Event] = []
-    for source in sources:
+    total = len(ordered_sources)
+    for index, source in enumerate(ordered_sources, start=1):
         markdown = source.path.read_text(encoding="utf-8")
         events.extend(extract_events(source, markdown))
+        if on_source_loaded is not None:
+            on_source_loaded(source, index, total)
     return events
 
 
-def choose_events(sources: list[ChronicleSource]) -> tuple[list[Event], dict[str, int]]:
+def source_bucket_key(source: ChronicleSource) -> int:
+    minute_of_day = source.recorded_at_local.hour * 60 + source.recorded_at_local.minute
+    return minute_of_day // PRIMARY_COVERAGE_BUCKET_MINUTES
+
+
+def source_span_hours(sources: list[ChronicleSource]) -> float:
+    if len(sources) < 2:
+        return 0.0
+    ordered = sorted(sources, key=lambda source: source.recorded_at_local)
+    delta = ordered[-1].recorded_at_local - ordered[0].recorded_at_local
+    return delta.total_seconds() / 3600
+
+
+def has_sufficient_primary_coverage(sources: list[ChronicleSource], events: list[Event]) -> bool:
+    if len(events) < MIN_PRIMARY_EVENTS or not sources:
+        return False
+    bucket_count = len({source_bucket_key(source) for source in sources})
+    return bucket_count >= 3 or source_span_hours(sources) >= MIN_PRIMARY_SPAN_HOURS
+
+
+def choose_events(
+    sources: list[ChronicleSource],
+    *,
+    progress: Optional[ProgressCallback] = None,
+    should_cancel: Optional[CancellationCheck] = None,
+) -> tuple[list[Event], dict[str, int]]:
     ten_minute_sources, six_hour_sources = split_sources_by_granularity(sources)
-    ten_minute_events = dedupe_events(load_events(ten_minute_sources))
+    total_sources = len(sources)
+    loaded_sources = 0
+
+    def emit_collect_update(source: ChronicleSource, _: int, __: int) -> None:
+        nonlocal loaded_sources
+        loaded_sources += 1
+        raise_if_cancelled(should_cancel)
+        if progress is None:
+            return
+        ratio = loaded_sources / max(1, total_sources)
+        progress(
+            {
+                "status": "running",
+                "phase": "collect",
+                "step_key": "loading.step.collect",
+                "detail_key": "loading.detail.collect",
+                "current": loaded_sources,
+                "total": total_sources,
+                "percent": min(36, 10 + round(ratio * 26)),
+                "stats": {
+                    "sources_total": total_sources,
+                    "sources_10min": len(ten_minute_sources),
+                    "sources_6h": len(six_hour_sources),
+                    "last_granularity": source.granularity,
+                },
+            }
+        )
+
+    ten_minute_events = dedupe_events(
+        load_events(ten_minute_sources, on_source_loaded=emit_collect_update)
+    )
 
     stats = {
         "sources_total": len(sources),
@@ -1233,13 +1399,37 @@ def choose_events(sources: list[ChronicleSource]) -> tuple[list[Event], dict[str
         "used_6h": 0,
     }
 
-    if ten_minute_events and (len(ten_minute_events) >= MIN_PRIMARY_EVENTS or not six_hour_sources):
+    if progress is not None:
+        progress(
+            {
+                "status": "running",
+                "phase": "organize",
+                "step_key": "loading.step.organize",
+                "detail_key": "loading.detail.organize",
+                "percent": 44,
+                "stats": {**stats, "events_selected": len(ten_minute_events)},
+            }
+        )
+
+    if ten_minute_events and (not six_hour_sources or has_sufficient_primary_coverage(ten_minute_sources, ten_minute_events)):
         return ten_minute_events, stats
 
-    six_hour_events = dedupe_events(load_events(six_hour_sources))
+    raise_if_cancelled(should_cancel)
+    six_hour_events = dedupe_events(load_events(six_hour_sources, on_source_loaded=emit_collect_update))
     merged = dedupe_events([*ten_minute_events, *six_hour_events])
     used_six_hour = {event.source.path for event in merged if event.source.granularity == "6h"}
     stats["used_6h"] = len(used_six_hour)
+    if progress is not None:
+        progress(
+            {
+                "status": "running",
+                "phase": "organize",
+                "step_key": "loading.step.organize",
+                "detail_key": "loading.detail.organize",
+                "percent": 58,
+                "stats": {**stats, "events_selected": len(merged)},
+            }
+        )
     return merged, stats
 
 
@@ -1689,7 +1879,9 @@ def to_localized_timeline_phrase(event: Event, output_language: str) -> str:
 def build_minor_timeline(
     events: list[Event],
     output_language: str = COMPATIBILITY_FALLBACK_LANGUAGE,
+    diary_length: str = DEFAULT_DIARY_LENGTH_CODE,
 ) -> list[str]:
+    profile = diary_length_profile(diary_length)
     timeline = []
     for event in events:
         phrase = to_localized_timeline_phrase(event, output_language).strip()
@@ -1697,34 +1889,36 @@ def build_minor_timeline(
             continue
         prefix = event.source.recorded_at_local.strftime("%H:%M")
         timeline.append(f"[{prefix}] {phrase}")
-    return unique_sentences(timeline)
+    return unique_sentences(timeline)[: profile["timeline_limit"]]
 
 
 def extract_lists(
     events: list[Event],
     output_language: str = COMPATIBILITY_FALLBACK_LANGUAGE,
+    diary_length: str = DEFAULT_DIARY_LENGTH_CODE,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     language = normalize_output_language(output_language, default=COMPATIBILITY_FALLBACK_LANGUAGE)
+    profile = diary_length_profile(diary_length)
     activities = unique_sentences(
         to_localized_sentence(event, language)
-        for event in select_representative_events(events, limit=5)
+        for event in select_representative_events(events, limit=profile["activity_limit"])
     )
     decisions = unique_sentences(
         to_localized_decision(event, language)
-        for event in select_representative_events(events, limit=4, required_tag="decision")
+        for event in select_representative_events(events, limit=profile["decision_limit"], required_tag="decision")
     )
     blockers = unique_sentences(
         to_localized_blocker(event, language)
-        for event in select_representative_events(events, limit=4, required_tag="blocker")
+        for event in select_representative_events(events, limit=profile["blocker_limit"], required_tag="blocker")
     )
     next_actions = unique_sentences(
         to_localized_next_action(event, language)
-        for event in select_representative_events(events, limit=4, required_tag="next_action")
+        for event in select_representative_events(events, limit=profile["next_action_limit"], required_tag="next_action")
     )
     if not next_actions:
         next_actions = unique_sentences(
             to_localized_next_action(event, language)
-            for event in select_representative_events(events, limit=4, required_tag="blocker")
+            for event in select_representative_events(events, limit=profile["next_action_limit"], required_tag="blocker")
         )
 
     if language == "korean":
@@ -1742,7 +1936,12 @@ def extract_lists(
             blockers = list(spec["default_blocker"])
         if not next_actions:
             next_actions = list(spec["default_next_action"])
-    return activities[:5], decisions[:4], blockers[:4], next_actions[:4]
+    return (
+        activities[: profile["activity_limit"]],
+        decisions[: profile["decision_limit"]],
+        blockers[: profile["blocker_limit"]],
+        next_actions[: profile["next_action_limit"]],
+    )
 
 
 def format_today_section(
@@ -2045,6 +2244,178 @@ def build_reflection(
     return " ".join(parts)
 
 
+def evenly_spaced_indices(total: int, limit: int) -> list[int]:
+    if total <= 0 or limit <= 0:
+        return []
+    if limit >= total:
+        return list(range(total))
+    if limit == 1:
+        return [0]
+
+    last_index = total - 1
+    step = last_index / (limit - 1)
+    indices: list[int] = []
+    seen: set[int] = set()
+
+    for offset in range(limit):
+        index = round(offset * step)
+        if index in seen:
+            continue
+        indices.append(index)
+        seen.add(index)
+
+    if len(indices) < limit:
+        for index in range(total):
+            if index in seen:
+                continue
+            indices.append(index)
+            seen.add(index)
+            if len(indices) >= limit:
+                break
+
+    return sorted(indices)
+
+
+def group_events_by_source(events: list[Event]) -> list[list[Event]]:
+    ordered = sorted(events, key=event_sort_key)
+    groups: list[list[Event]] = []
+    current_group: list[Event] = []
+    current_path: Optional[Path] = None
+
+    for event in ordered:
+        if current_path != event.source.path:
+            if current_group:
+                groups.append(current_group)
+            current_group = [event]
+            current_path = event.source.path
+            continue
+        current_group.append(event)
+
+    if current_group:
+        groups.append(current_group)
+
+    return groups
+
+
+def select_priority_prompt_events(events: list[Event], *, max_events: int) -> list[Event]:
+    if max_events <= 0 or not events:
+        return []
+
+    selected: list[Event] = []
+    seen: set[Event] = set()
+
+    def add(event: Event) -> None:
+        if event in seen or len(selected) >= max_events:
+            return
+        selected.append(event)
+        seen.add(event)
+
+    add(events[0])
+    add(events[-1])
+
+    for tag in PROMPT_PRIORITY_TAGS:
+        tagged = [event for event in events if tag in event.tags and event not in seen]
+        tagged.sort(
+            key=lambda event: (
+                -event_information_score(event),
+                event.source.recorded_at_local,
+                event.order,
+            )
+        )
+        for event in tagged[:LLM_PROMPT_PINNED_PER_TAG]:
+            add(event)
+
+    return sorted(selected, key=event_sort_key)
+
+
+def sample_events_for_prompt(events: list[Event], *, max_events: int = LLM_PROMPT_EVENT_LIMIT) -> list[Event]:
+    if max_events <= 0 or not events:
+        return []
+    ordered = sorted(events, key=event_sort_key)
+    if len(ordered) <= max_events:
+        return ordered
+    if max_events == 1:
+        return [ordered[0]]
+
+    selected = select_priority_prompt_events(ordered, max_events=max_events)
+    seen = set(selected)
+    remaining_slots = max_events - len(selected)
+
+    if remaining_slots <= 0:
+        return sorted(selected, key=event_sort_key)
+
+    grouped = [
+        deque(event for event in group if event not in seen)
+        for group in group_events_by_source(ordered)
+    ]
+
+    while remaining_slots > 0:
+        active_indices = [index for index, queue in enumerate(grouped) if queue]
+        if not active_indices:
+            break
+
+        bucket_pick_count = min(len(active_indices), remaining_slots)
+        for active_position in evenly_spaced_indices(len(active_indices), bucket_pick_count):
+            queue = grouped[active_indices[active_position]]
+            while queue and queue[0] in seen:
+                queue.popleft()
+            if not queue:
+                continue
+            event = queue.popleft()
+            selected.append(event)
+            seen.add(event)
+            remaining_slots -= 1
+            if remaining_slots <= 0:
+                break
+
+    return sorted(selected, key=event_sort_key)
+
+
+def collapse_prompt_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def truncate_prompt_fragment(text: str, *, max_chars: int) -> str:
+    normalized = collapse_prompt_whitespace(text)
+    if len(normalized) <= max_chars:
+        return normalized
+    clipped = normalized[: max_chars - 3].rstrip()
+    if " " in clipped:
+        clipped = clipped.rsplit(" ", 1)[0].rstrip()
+    if not clipped:
+        clipped = normalized[: max_chars - 3].rstrip()
+    return f"{clipped}..."
+
+
+def build_prompt_event_lines(
+    events: list[Event],
+    *,
+    char_budget: int = LLM_PROMPT_CHAR_BUDGET,
+) -> tuple[list[str], list[Event]]:
+    lines: list[str] = []
+    included: list[Event] = []
+    used_chars = 0
+
+    for event in events:
+        section_title = truncate_prompt_fragment(event.section_title, max_chars=LLM_PROMPT_SECTION_TITLE_LIMIT)
+        text = truncate_prompt_fragment(event.text, max_chars=LLM_PROMPT_EVENT_TEXT_LIMIT)
+        line = (
+            f"- [{event.source.recorded_at_local.strftime('%H:%M')}] "
+            f"{event.source.granularity} | {section_title} | tags={','.join(event.tags)} | {text}"
+        )
+        projected = used_chars + len(line) + (1 if lines else 0)
+        if lines and projected > char_budget:
+            break
+        if not lines and projected > char_budget:
+            line = truncate_prompt_fragment(line, max_chars=char_budget)
+            projected = len(line)
+        lines.append(line)
+        included.append(event)
+        used_chars = projected
+
+    return lines, included
+
+
 def build_llm_prompt(
     *,
     mode: str,
@@ -2053,10 +2424,18 @@ def build_llm_prompt(
     stats: dict[str, int],
     events: list[Event],
     output_language: str,
+    diary_length: str = DEFAULT_DIARY_LENGTH_CODE,
 ) -> str:
     language = normalize_output_language(output_language)
+    normalized_length = normalize_diary_length_code(diary_length)
+    profile = diary_length_profile(normalized_length)
     spec = language_spec(language)
     sections = spec["sections"]
+    prompt_events = sample_events_for_prompt(events, max_events=profile["prompt_event_limit"])
+    prompt_event_lines, included_prompt_events = build_prompt_event_lines(
+        prompt_events,
+        char_budget=profile["prompt_char_budget"],
+    )
     if language == "korean":
         title_suffix = "작업 일기 초안" if mode == "draft-update" else "작업 일기"
         source_note = (
@@ -2082,8 +2461,13 @@ def build_llm_prompt(
         f"Mode: {mode}",
         f"Day-boundary hour: {day_boundary_hour}:00 local time",
         f"Output language: {spec['label']}",
+        f"Diary length: {normalized_length}",
         f"10-minute summaries used: {stats.get('used_10min', 0)}",
         f"6-hour summaries used: {stats.get('used_6h', 0)}",
+        f"Total extracted events: {len(events)}",
+        f"Prompt events sampled: {len(prompt_events)}",
+        f"Prompt events included: {len(included_prompt_events)}",
+        f"Prompt source windows represented: {len({event.source.path for event in included_prompt_events})}",
         "",
         "Writing rules:",
         f"- Write the entire markdown in {spec['label']}.",
@@ -2092,6 +2476,7 @@ def build_llm_prompt(
         "- Do not quote the source text at length; summarize instead.",
         "- Never restore or repeat sensitive data.",
         "- Even if they feel low-signal, keep real app switches, short document checks, confirmation clicks, waiting states, and auth flows if they were actually visible.",
+        f"- Length target: {normalized_length}. {profile['guidance']}",
         "- Include both the report section and the diary section in the same document.",
         "- The diary section should not copy the report verbatim; it should sound softer and a little more personal while staying factual.",
         f"- The first line must be exactly: {exact_title}",
@@ -2108,15 +2493,16 @@ def build_llm_prompt(
         f"  {sections['tomorrow']}",
         f"  {sections['reflection']}",
         f"  {spec['diary_heading']}",
-        "  (2-4 short paragraphs)",
+        f"  ({profile['diary_paragraph_instruction']})",
+        "",
+        "- Treat the event list as chronological coverage of the whole day. If there are many events, it is balanced across source windows instead of taking only the earliest dense cluster.",
+        f"- If the day has many events, keep the timeline section concrete and appropriately detailed for the {normalized_length} setting instead of compressing it too aggressively.",
+        "- When visible, decision, blocker, and next_action events are pinned into the prompt even if the day is otherwise noisy.",
+        "- Event lines may be trimmed to keep the prompt within a bounded size.",
         "",
         "Event list:",
     ]
-    for event in events[:18]:
-        lines.append(
-            f"- [{event.source.recorded_at_local.strftime('%H:%M')}] "
-            f"{event.source.granularity} | {event.section_title} | tags={','.join(event.tags)} | {event.text}"
-        )
+    lines.extend(prompt_event_lines)
     return "\n".join(lines)
 
 
@@ -2127,10 +2513,15 @@ def fallback_markdown(
     stats: dict[str, int],
     events: list[Event],
     output_language: str = COMPATIBILITY_FALLBACK_LANGUAGE,
+    diary_length: str = DEFAULT_DIARY_LENGTH_CODE,
 ) -> str:
     language = normalize_output_language(output_language, default=COMPATIBILITY_FALLBACK_LANGUAGE)
-    activities, decisions, blockers, next_actions = extract_lists(events, language)
-    timeline = build_minor_timeline(events, language)
+    activities, decisions, blockers, next_actions = extract_lists(
+        events,
+        language,
+        diary_length=diary_length,
+    )
+    timeline = build_minor_timeline(events, language, diary_length=diary_length)
     reflection = build_reflection(events, activities, blockers, language)
 
     if language == "korean":
@@ -2190,21 +2581,70 @@ def generate_markdown(
     events: list[Event],
     provider: Optional[LLMProvider],
     output_language: str,
+    progress: Optional[ProgressCallback] = None,
+    diary_length: str = DEFAULT_DIARY_LENGTH_CODE,
+    should_cancel: Optional[CancellationCheck] = None,
 ) -> tuple[str, bool, list[str]]:
+    raise_if_cancelled(should_cancel)
+    if progress is not None:
+        progress(
+            {
+                "status": "running",
+                "phase": "write",
+                "step_key": "loading.step.write",
+                "detail_key": "loading.detail.writePrepare",
+                "percent": 72,
+                "indeterminate": False,
+                "stats": {"events_selected": len(events)},
+            }
+        )
     if provider is None:
+        if progress is not None:
+            progress(
+                {
+                    "status": "failed",
+                    "phase": "write",
+                    "step_key": "loading.step.write",
+                    "detail_key": "loading.detail.write",
+                    "percent": 72,
+                    "indeterminate": False,
+                    "error": "먼저 codex를 연결해주세요. ChatGPT 로그인이 확인되지 않았습니다.",
+                    "stats": {"events_selected": len(events)},
+                }
+            )
         raise LLMError("먼저 codex를 연결해주세요. ChatGPT 로그인이 확인되지 않았습니다.")
 
-    markdown = provider.generate_markdown(
-        build_llm_prompt(
-            mode=mode,
-            target_date=target_date,
-            day_boundary_hour=day_boundary_hour,
-            stats=stats,
-            events=events,
-            output_language=output_language,
-        ),
-        output_language=output_language_label(output_language),
+    prompt = build_llm_prompt(
+        mode=mode,
+        target_date=target_date,
+        day_boundary_hour=day_boundary_hour,
+        stats=stats,
+        events=events,
+        output_language=output_language,
+        diary_length=diary_length,
     )
+    generate_method = provider.generate_markdown
+    signature = inspect.signature(generate_method)
+    call_kwargs = {
+        "output_language": output_language_label(output_language),
+    }
+    if "progress" in signature.parameters:
+        call_kwargs["progress"] = progress
+    if "should_cancel" in signature.parameters:
+        call_kwargs["should_cancel"] = should_cancel
+    markdown = generate_method(prompt, **call_kwargs)
+    raise_if_cancelled(should_cancel)
+    if progress is not None:
+        progress(
+            {
+                "status": "running",
+                "phase": "finish",
+                "step_key": "loading.step.finish",
+                "detail_key": "loading.detail.finish",
+                "percent": 90,
+                "stats": {"events_selected": len(events)},
+            }
+        )
     return markdown.strip() + "\n", True, []
 
 
@@ -2224,9 +2664,46 @@ def build_diary(
     out_dir: Path,
     day_boundary_hour: int,
     output_language: str = DEFAULT_OUTPUT_LANGUAGE,
+    diary_length: str = DEFAULT_DIARY_LENGTH_CODE,
     provider: Optional[LLMProvider] = None,
+    progress: Optional[ProgressCallback] = None,
+    should_cancel: Optional[CancellationCheck] = None,
 ) -> DiaryBuildResult:
     local_tz = get_local_timezone()
+    normalized_output_language = normalize_output_language(output_language)
+    normalized_diary_length = normalize_diary_length_code(diary_length)
+    target_date_iso = target_date.isoformat()
+
+    def emit_progress(update: dict[str, Any]) -> None:
+        if progress is None:
+            return
+        snapshot = {
+            "status": update.get("status", "running"),
+            "phase": update.get("phase"),
+            "percent": update.get("percent"),
+            "current": update.get("current"),
+            "total": update.get("total"),
+            "step_key": update.get("step_key"),
+            "detail_key": update.get("detail_key"),
+            "indeterminate": bool(update.get("indeterminate", False)),
+            "error": update.get("error"),
+            "target_date": target_date_iso,
+            "mode": mode,
+            "output_language_code": normalized_output_language,
+            "stats": dict(update.get("stats") or {}),
+        }
+        progress(snapshot)
+
+    emit_progress(
+        {
+            "status": "running",
+            "phase": "collect",
+            "step_key": "loading.step.collect",
+            "detail_key": "loading.detail.collect",
+            "percent": 6,
+        }
+    )
+    raise_if_cancelled(should_cancel)
     sources = discover_sources(
         source_dir,
         target_date=target_date,
@@ -2234,33 +2711,94 @@ def build_diary(
         local_tz=local_tz,
     )
     if not sources:
-        raise FileNotFoundError(
-            f"{target_date.isoformat()} 기준 Chronicle 요약 파일을 찾지 못했습니다. "
+        message = (
+            f"{target_date_iso} 기준 Chronicle 요약 파일을 찾지 못했습니다. "
             f"입력 폴더를 확인하거나 --source-dir 옵션을 사용해 주세요."
         )
-
-    events, stats = choose_events(sources)
-    if not events:
-        raise FileNotFoundError(
-            f"{target_date.isoformat()} 기준 Chronicle 요약은 있었지만, 읽을 수 있는 본문 이벤트를 추출하지 못했습니다."
+        emit_progress(
+            {
+                "status": "failed",
+                "phase": "collect",
+                "step_key": "loading.step.collect",
+                "detail_key": "loading.detail.collect",
+                "percent": 6,
+                "error": message,
+            }
         )
+        raise FileNotFoundError(
+            message
+        )
+    raise_if_cancelled(should_cancel)
+
+    ten_minute_sources, six_hour_sources = split_sources_by_granularity(sources)
+    emit_progress(
+        {
+            "status": "running",
+            "phase": "collect",
+            "step_key": "loading.step.collect",
+            "detail_key": "loading.detail.collect",
+            "current": 0,
+            "total": len(sources),
+            "percent": 10,
+            "stats": {
+                "sources_total": len(sources),
+                "sources_10min": len(ten_minute_sources),
+                "sources_6h": len(six_hour_sources),
+            },
+        }
+    )
+
+    events, stats = choose_events(sources, progress=emit_progress, should_cancel=should_cancel)
+    if not events:
+        message = (
+            f"{target_date_iso} 기준 Chronicle 요약은 있었지만, 읽을 수 있는 본문 이벤트를 추출하지 못했습니다."
+        )
+        emit_progress(
+            {
+                "status": "failed",
+                "phase": "organize",
+                "step_key": "loading.step.organize",
+                "detail_key": "loading.detail.organize",
+                "percent": 44,
+                "error": message,
+                "stats": stats,
+            }
+        )
+        raise FileNotFoundError(
+            message
+        )
+    raise_if_cancelled(should_cancel)
 
     resolved_provider = provider if provider is not None else load_provider_from_codex()
     markdown, used_llm, warnings = generate_markdown(
-        target_date=target_date.isoformat(),
+        target_date=target_date_iso,
         mode=mode,
         day_boundary_hour=day_boundary_hour,
         stats=stats,
         events=events,
         provider=resolved_provider,
-        output_language=normalize_output_language(output_language),
+        output_language=normalized_output_language,
+        progress=emit_progress,
+        diary_length=normalized_diary_length,
+        should_cancel=should_cancel,
     )
-    return DiaryBuildResult(
+    result = DiaryBuildResult(
         target_date=target_date,
         mode=mode,
         markdown=markdown,
-        output_path=resolve_output_path(out_dir, mode, target_date.isoformat()),
+        output_path=resolve_output_path(out_dir, mode, target_date_iso),
         used_llm=used_llm,
-        stats=stats,
+        stats={**stats, "diary_length": normalized_diary_length},
         warnings=tuple(warnings),
     )
+    emit_progress(
+        {
+            "status": "completed",
+            "phase": "finish",
+            "step_key": "loading.step.finish",
+            "detail_key": "loading.detail.finish",
+            "percent": 100,
+            "stats": {**stats, "events_selected": len(events)},
+        }
+    )
+    return result

@@ -3,6 +3,22 @@
 
   const TIMELINE_PREVIEW = 8;
   const TIMELINE_STEP = 20;
+  const GENERATION_REQUEST_TIMEOUT_MS = 255000;
+  const LOADING_PHASE_INDEX = {
+    collect: 0,
+    organize: 0,
+    write: 1,
+    finish: 2,
+  };
+  const LOADING_PHASES = [
+    {
+      titleKeys: ["loading.step.collect", "loading.step.organize"],
+      detailKey: "loading.detail.collect",
+      minSeconds: 0,
+    },
+    { titleKey: "loading.step.write", detailKey: "loading.detail.write", minSeconds: 8 },
+    { titleKey: "loading.step.finish", detailKey: "loading.detail.finish", minSeconds: 18 },
+  ];
   const MOOD_OPTIONS = [
     { key: "sparkle", emoji: "✨" },
     { key: "happy", emoji: "😊" },
@@ -15,17 +31,17 @@
   const OUTPUT_LANGUAGE_KEY = "codex-diary:output-language:v1";
   const RUNTIME_STYLE_ID = "codex-diary-runtime-style";
   const OUTPUT_LANGUAGES = [
-    { key: "en", label: "English", locale: "en-US" },
-    { key: "ko", label: "Korean", locale: "ko-KR" },
-    { key: "ja", label: "Japanese", locale: "ja-JP" },
-    { key: "zh", label: "Chinese", locale: "zh-CN" },
-    { key: "fr", label: "French", locale: "fr-FR" },
-    { key: "de", label: "German", locale: "de-DE" },
-    { key: "es", label: "Spanish", locale: "es-ES" },
-    { key: "vi", label: "Vietnamese", locale: "vi-VN" },
-    { key: "th", label: "Thai", locale: "th-TH" },
-    { key: "ru", label: "Russian", locale: "ru-RU" },
-    { key: "hi", label: "Hindi", locale: "hi-IN" },
+    { key: "en", label: "English", nativeLabel: "English", locale: "en-US" },
+    { key: "ko", label: "Korean", nativeLabel: "한국어", locale: "ko-KR" },
+    { key: "ja", label: "Japanese", nativeLabel: "日本語", locale: "ja-JP" },
+    { key: "zh", label: "Chinese", nativeLabel: "中文", locale: "zh-CN" },
+    { key: "fr", label: "French", nativeLabel: "Français", locale: "fr-FR" },
+    { key: "de", label: "German", nativeLabel: "Deutsch", locale: "de-DE" },
+    { key: "es", label: "Spanish", nativeLabel: "Español", locale: "es-ES" },
+    { key: "vi", label: "Vietnamese", nativeLabel: "Tiếng Việt", locale: "vi-VN" },
+    { key: "th", label: "Thai", nativeLabel: "ไทย", locale: "th-TH" },
+    { key: "ru", label: "Russian", nativeLabel: "Русский", locale: "ru-RU" },
+    { key: "hi", label: "Hindi", nativeLabel: "हिन्दी", locale: "hi-IN" },
   ];
   const UI_COPY = window.CODEX_DIARY_UI_COPY || { en: {} };
   const ENTRY_TONES = [
@@ -64,6 +80,11 @@
     selectedDateIso: null,
     selectedWeekStart: null,
     busy: false,
+    busyKind: null,
+    loadingTimerId: null,
+    loadingTick: 0,
+    generationMeta: null,
+    generationProgress: null,
     codex: {
       loaded: false,
       available: false,
@@ -75,10 +96,15 @@
     timelineVisibleCount: TIMELINE_PREVIEW,
     settingsOpen: false,
     menuOpen: false,
+    languagePinned: false,
   };
 
   function currentUiOption(value = state.config.outputLanguage) {
     return OUTPUT_LANGUAGES.find((option) => option.key === value) || OUTPUT_LANGUAGES[0];
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
   }
 
   function currentUiLanguage() {
@@ -99,6 +125,176 @@
 
   function moodLabel(moodKey) {
     return t(`mood.${moodKey}`);
+  }
+
+  function displayLanguageLabel(value = state.config.outputLanguage) {
+    const option = getOutputLanguageOption(value);
+    return option.nativeLabel || option.label;
+  }
+
+  function toNullableNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  function normalizeProgress(progress) {
+    if (!progress || typeof progress !== "object") return null;
+    return {
+      ...progress,
+      percent: toNullableNumber(progress.percent),
+      current: toNullableNumber(progress.current),
+      total: toNullableNumber(progress.total),
+      stats:
+        progress.stats && typeof progress.stats === "object" ? progress.stats : {},
+      indeterminate: Boolean(progress.indeterminate),
+      error: progress.error ? String(progress.error) : "",
+      phase: progress.phase ? String(progress.phase) : null,
+      status: progress.status ? String(progress.status) : "running",
+    };
+  }
+
+  function syncGenerationProgress(progress) {
+    state.generationProgress = normalizeProgress(progress);
+    if (state.busy && state.busyKind === "generate") {
+      updateLoadingView();
+    }
+  }
+
+  function currentLoadingFallback(elapsedSeconds) {
+    const phaseIndex = 0;
+    return {
+      phaseIndex,
+      phase: LOADING_PHASES[phaseIndex],
+      percent: clamp(18 + Math.min(elapsedSeconds, 8) * 2, 8, 34),
+      indeterminate: true,
+      progress: null,
+    };
+  }
+
+  function loadingMetaText(snapshot) {
+    return "";
+  }
+
+  function loadingStepTitle(step) {
+    const keys = Array.isArray(step.titleKeys) ? step.titleKeys : [step.titleKey];
+    return keys.filter(Boolean).map((key) => t(key)).join(" · ");
+  }
+
+  function loadingStepDetail(step, index, snapshot) {
+    const progress = snapshot.progress;
+    if (index < snapshot.phaseIndex) {
+      return "";
+    }
+    const baseKey =
+      progress && index === snapshot.phaseIndex && progress.detail_key
+        ? progress.detail_key
+        : step.detailKey;
+    const baseText = t(baseKey);
+    if (!progress || index !== snapshot.phaseIndex) return baseText;
+
+    const suffixes = [];
+    if (progress.current !== null && progress.total !== null && progress.total > 0) {
+      suffixes.push(`${progress.current}/${progress.total}`);
+    } else if (!progress.indeterminate && typeof progress.percent === "number" && progress.percent > 0) {
+      suffixes.push(`${progress.percent}%`);
+    }
+    return suffixes.length ? `${baseText} · ${suffixes.join(" · ")}` : baseText;
+  }
+
+  function currentLoadingSnapshot() {
+    const startedAt = state.generationMeta?.startedAt || Date.now();
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    const progress = state.generationProgress;
+    const fallback = currentLoadingFallback(elapsedSeconds);
+    if (!progress || !progress.phase || progress.status === "idle") {
+      return { elapsedSeconds, ...fallback };
+    }
+    const phaseIndex =
+      LOADING_PHASE_INDEX[progress.phase] ?? fallback.phaseIndex;
+    const phase = LOADING_PHASES[phaseIndex] || fallback.phase;
+    return {
+      elapsedSeconds,
+      phaseIndex,
+      phase,
+      percent:
+        progress.percent !== null
+          ? clamp(progress.percent, 0, 100)
+          : fallback.percent,
+      indeterminate: Boolean(progress.indeterminate),
+      progress,
+    };
+  }
+
+  function updateLoadingView() {
+    if (!(state.busy && state.busyKind === "generate")) return;
+    const root = document.querySelector("[data-loading-card]");
+    if (!root) {
+      renderStage();
+      return;
+    }
+
+    const snapshot = currentLoadingSnapshot();
+    const { elapsedSeconds, phaseIndex, phase } = snapshot;
+    const phaseText = root.querySelector("[data-loading-phase]");
+    const elapsedText = root.querySelector("[data-loading-elapsed]");
+    const metaText = root.querySelector("[data-loading-meta]");
+    if (phaseText) phaseText.textContent = t((snapshot.progress && snapshot.progress.detail_key) || phase.detailKey);
+    if (elapsedText) elapsedText.textContent = t("loading.elapsed", { seconds: elapsedSeconds });
+    if (metaText) {
+      const meta = loadingMetaText(snapshot);
+      metaText.textContent = meta;
+      metaText.hidden = !meta;
+    }
+
+    const meter = root.querySelector("[data-loading-progressbar]");
+    const meterBar = root.querySelector("[data-loading-meter-bar]");
+    if (meter) {
+      meter.setAttribute("aria-valuemin", "0");
+      meter.setAttribute("aria-valuemax", "100");
+      meter.setAttribute("aria-valuetext", t((snapshot.progress && snapshot.progress.detail_key) || phase.detailKey));
+      if (snapshot.indeterminate) {
+        meter.removeAttribute("aria-valuenow");
+      } else {
+        meter.setAttribute("aria-valuenow", String(snapshot.percent));
+      }
+    }
+    if (meterBar) {
+      meterBar.style.width = `${snapshot.indeterminate ? 44 : clamp(snapshot.percent, 6, 100)}%`;
+      meterBar.classList.toggle("is-determinate", !snapshot.indeterminate);
+      meterBar.classList.toggle("is-indeterminate", snapshot.indeterminate);
+    }
+
+    root.querySelectorAll("[data-loading-step]").forEach((node) => {
+      const stepIndex = Number(node.dataset.loadingStep || 0);
+      const isDone = snapshot.progress?.status === "completed" ? stepIndex <= phaseIndex : stepIndex < phaseIndex;
+      node.classList.toggle("is-done", isDone);
+      node.classList.toggle("is-active", stepIndex === phaseIndex && snapshot.progress?.status !== "completed");
+      const badge = node.querySelector("[data-loading-badge]");
+      if (badge) {
+        badge.textContent = isDone ? "✓" : `${stepIndex + 1}`;
+      }
+      const detail = node.querySelector("[data-loading-step-detail]");
+      if (detail) {
+        detail.textContent = loadingStepDetail(LOADING_PHASES[stepIndex], stepIndex, snapshot);
+      }
+    });
+  }
+
+  function startLoadingPulse() {
+    if (state.loadingTimerId) clearInterval(state.loadingTimerId);
+    state.loadingTick = 0;
+    state.loadingTimerId = setInterval(() => {
+      if (!(state.busy && state.busyKind === "generate")) return;
+      state.loadingTick += 1;
+      updateLoadingView();
+    }, 1000);
+  }
+
+  function stopLoadingPulse() {
+    if (state.loadingTimerId) {
+      clearInterval(state.loadingTimerId);
+      state.loadingTimerId = null;
+    }
+    state.loadingTick = 0;
   }
 
   const api = () =>
@@ -139,6 +335,7 @@
       header: 44,
       empty: 220,
       diary: 240,
+      loading: 260,
     };
     const size = sizes[variant] || 72;
     const svg = document.createElementNS(svgNS, "svg");
@@ -358,11 +555,11 @@
     }
     if (set.size) return Array.from(set);
     const seeds = [];
-    if (structured?.report?.today) seeds.push(currentUiLanguage() === "ko" ? "오늘기록" : "today");
-    if (structured?.report?.decisions?.length) seeds.push(currentUiLanguage() === "ko" ? "결정" : "decisions");
-    if (structured?.report?.blockers?.length) seeds.push(currentUiLanguage() === "ko" ? "고민" : "blockers");
-    if (structured?.report?.tomorrow?.length) seeds.push(currentUiLanguage() === "ko" ? "내일할일" : "tomorrow");
-    if (structured?.has_diary) seeds.push(currentUiLanguage() === "ko" ? "일기" : "diary");
+    if (structured?.report?.today) seeds.push(t("tag.today"));
+    if (structured?.report?.decisions?.length) seeds.push(t("tag.decisions"));
+    if (structured?.report?.blockers?.length) seeds.push(t("tag.blockers"));
+    if (structured?.report?.tomorrow?.length) seeds.push(t("tag.tomorrow"));
+    if (structured?.has_diary) seeds.push(t("tag.diary"));
     return seeds.slice(0, 4);
   }
 
@@ -539,7 +736,7 @@
             "aria-label": t("settings.languageLabel"),
           },
           OUTPUT_LANGUAGES.map((option) =>
-            el("option", { value: option.key }, option.label),
+            el("option", { value: option.key }, option.nativeLabel || option.label),
           ),
         ),
       ]),
@@ -661,7 +858,7 @@
     }
 
     const introBadge = document.querySelector(".settings__intro-badge");
-    if (introBadge) introBadge.textContent = t("settings.introBadge", { language: getOutputLanguageOption().label });
+    if (introBadge) introBadge.textContent = t("settings.introBadge", { language: displayLanguageLabel() });
   }
 
   function normalizeLanguageKey(value) {
@@ -712,7 +909,10 @@
   function setOutputLanguage(value, { persist = true } = {}) {
     const option = getOutputLanguageOption(value);
     state.config.outputLanguage = option.key;
-    if (persist) writeTextStorage(OUTPUT_LANGUAGE_KEY, option.key);
+    if (persist) {
+      writeTextStorage(OUTPUT_LANGUAGE_KEY, option.key);
+      state.languagePinned = true;
+    }
     applyStaticUiCopy();
     renderConfig();
     renderSideDates();
@@ -721,6 +921,7 @@
 
   function hydrateClientPreferences() {
     const storedLanguage = normalizeLanguageKey(readTextStorage(OUTPUT_LANGUAGE_KEY));
+    state.languagePinned = Boolean(storedLanguage);
     state.config.outputLanguage = storedLanguage || DEFAULT_OUTPUT_LANGUAGE;
   }
 
@@ -814,6 +1015,11 @@
     if (state.menuOpen) toggleMenu(false);
     stage.innerHTML = "";
 
+    if (state.busy && state.busyKind === "generate") {
+      stage.appendChild(renderLoadingStage());
+      return;
+    }
+
     if (state.nav === "calendar") {
       stage.appendChild(renderCalendar());
       return;
@@ -880,7 +1086,7 @@
       ? t("empty.titleWithDate", { date: formatDisplayDate(iso) })
       : t("empty.titleToday");
     const copy = hasTargetDate
-      ? t("empty.copyWithDate", { language: getOutputLanguageOption().label })
+      ? t("empty.copyWithDate", { language: displayLanguageLabel() })
       : t("empty.copyToday");
 
     return el("section", { class: "empty" }, [
@@ -890,6 +1096,71 @@
         el("span", { class: "empty__heart" }, " ♡"),
       ]),
       el("p", { class: "empty__copy" }, copy),
+    ]);
+  }
+
+  function renderLoadingStage() {
+    const meta = state.generationMeta || {};
+    const iso = meta.targetDate || state.selectedDateIso || state.config.targetDate;
+    const language = displayLanguageLabel(meta.languageKey || state.config.outputLanguage);
+    const title = iso
+      ? t("loading.titleWithDate", { date: formatDisplayDate(iso) })
+      : t("loading.titleToday");
+    const snapshot = currentLoadingSnapshot();
+    const { elapsedSeconds, phaseIndex, phase } = snapshot;
+
+    const mascot = el("div", { class: "loading-card__art", "aria-hidden": "true" });
+    const glow = el("div", { class: "loading-card__glow" });
+    const img = document.createElement("img");
+    img.src = "assets/mascot-diary.png";
+    img.alt = "";
+    img.onerror = () => img.replaceWith(window.__mascotSvg("loading"));
+    mascot.append(glow, img);
+    ["1", "2", "3", "4"].forEach((index) =>
+      mascot.appendChild(el("span", { class: `loading-card__spark loading-card__spark--${index}` })),
+    );
+
+    const stepList = el("ol", { class: "loading-steps" });
+    LOADING_PHASES.forEach((step, index) => {
+      const stateClass =
+        index < phaseIndex ? "is-done" : index === phaseIndex ? "is-active" : "";
+      stepList.appendChild(
+        el("li", { class: `loading-step ${stateClass}`.trim(), dataset: { loadingStep: String(index) } }, [
+          el("span", { class: "loading-step__badge", "data-loading-badge": "true" }, index < phaseIndex ? "✓" : `${index + 1}`),
+          el("div", { class: "loading-step__copy" }, [
+            el("div", { class: "loading-step__title" }, loadingStepTitle(step)),
+            el("div", { class: "loading-step__detail", "data-loading-step-detail": "true" }, loadingStepDetail(step, index, snapshot)),
+          ]),
+        ]),
+      );
+    });
+
+    const meterAttrs = {
+      class: "loading-card__meter",
+      "data-loading-progressbar": "true",
+      role: "progressbar",
+      "aria-valuemin": "0",
+      "aria-valuemax": "100",
+      "aria-valuetext": t((snapshot.progress && snapshot.progress.detail_key) || phase.detailKey),
+    };
+    if (!snapshot.indeterminate) {
+      meterAttrs["aria-valuenow"] = String(snapshot.percent);
+    }
+
+    return el("section", { class: "loading-card", "data-loading-card": "true" }, [
+      el("div", { class: "loading-card__copy-block" }, [
+        el("div", { class: "loading-card__badge" }, t("loading.badge", { language })),
+        el("h2", { class: "loading-card__title" }, title),
+        el("p", { class: "loading-card__copy" }, t("loading.copy", { language })),
+        el("div", meterAttrs, [el("span", { class: `loading-card__meter-bar ${snapshot.indeterminate ? "is-indeterminate" : "is-determinate"}`.trim(), "data-loading-meter-bar": "true", style: `width: ${snapshot.indeterminate ? 44 : clamp(snapshot.percent, 6, 100)}%` })]),
+        el("p", { class: "loading-card__phase", "data-loading-phase": "true", role: "status", "aria-live": "polite", "aria-atomic": "true" }, t((snapshot.progress && snapshot.progress.detail_key) || phase.detailKey)),
+        el("div", { class: "loading-card__meta-row" }, [
+          el("span", { class: "loading-card__elapsed", "data-loading-elapsed": "true" }, t("loading.elapsed", { seconds: elapsedSeconds })),
+          el("span", { class: "loading-card__meta", "data-loading-meta": "true", hidden: !loadingMetaText(snapshot) }, loadingMetaText(snapshot)),
+        ]),
+        stepList,
+      ]),
+      mascot,
     ]);
   }
 
@@ -1357,7 +1628,7 @@
                 setFooter(
                   t("footer.noSavedForDateCalendar", {
                     date: formatDisplayDate(iso),
-                    language: getOutputLanguageOption().label,
+                    language: displayLanguageLabel(),
                   }),
                 );
                 setWarning("");
@@ -1399,7 +1670,7 @@
               el(
                 "div",
                 { class: "week-card__range" },
-                `${week.start.slice(5)} ~ ${week.end.slice(5)}`,
+                formatWeekRange(week.start, week.end),
               ),
               el("div", { class: "week-card__meta" }, t("calendar.weekRecords", { count: week.count })),
             ],
@@ -1618,6 +1889,7 @@
 
   /* Topbar / config ----------------------------------------------------- */
   function renderConfig() {
+    applyStaticUiCopy();
     const iso = state.config.targetDate;
     const dateMain = $("#date-main");
     const weekdayEl = $("#date-weekday");
@@ -1629,19 +1901,23 @@
 
     const boundaryLabel = $("#boundary-label");
     if (boundaryLabel)
-      boundaryLabel.textContent = `${String(state.config.boundaryHour).padStart(2, "0")}시`;
+      boundaryLabel.textContent = t("boundary.label", {
+        hour: String(state.config.boundaryHour).padStart(2, "0"),
+      });
     const boundaryChip = $("#boundary-chip");
     if (boundaryChip)
-      boundaryChip.textContent = `${String(state.config.boundaryHour).padStart(2, "0")}시 기준`;
+      boundaryChip.textContent = t("boundary.chip", {
+        hour: String(state.config.boundaryHour).padStart(2, "0"),
+      });
 
     const srcEl = $("#source-path");
     if (srcEl) {
-      srcEl.textContent = state.config.sourceDir || "기본 폴더 사용";
+      srcEl.textContent = state.config.sourceDir || t("path.default");
       srcEl.title = state.config.sourceDir || "";
     }
     const outEl = $("#out-path");
     if (outEl) {
-      outEl.textContent = state.config.outDir || "기본 폴더 사용";
+      outEl.textContent = state.config.outDir || t("path.default");
       outEl.title = state.config.outDir || "";
     }
 
@@ -1654,7 +1930,13 @@
     if (autoSave) autoSave.checked = state.config.autoSave;
 
     const languageSelect = $("#output-language");
-    if (languageSelect) languageSelect.value = getOutputLanguageOption().key;
+    if (languageSelect) {
+      Array.from(languageSelect.options).forEach((optionEl) => {
+        const option = getOutputLanguageOption(optionEl.value);
+        optionEl.textContent = option.nativeLabel || option.label;
+      });
+      languageSelect.value = getOutputLanguageOption().key;
+    }
     const viewSegmented = $("#view-segmented");
     if (viewSegmented) {
       const hiddenOutsideDiary = state.nav !== "diary";
@@ -1688,7 +1970,7 @@
       normalizeLanguageKey(config.preferred_language) ||
       normalizeLanguageKey(config.language) ||
       normalizeLanguageKey(config.locale);
-    if (language) state.config.outputLanguage = language;
+    if (language && !state.languagePinned) state.config.outputLanguage = language;
     renderConfig();
   }
 
@@ -1746,21 +2028,21 @@
     }
 
     const detailText = connected
-      ? "일기 생성 준비가 끝났어요."
+      ? t("status.detail.connected")
       : loaded
-        ? codex.detail || "로그인이 필요해요."
-        : "잠시만 기다려 주세요.";
+        ? t("status.detail.login")
+        : t("status.detail.wait");
     host.title = detailText;
 
     const text = host.querySelector(".bridge-status__text");
     if (text) {
       text.textContent = connected
-        ? "Codex Ready"
+        ? t("status.text.connected")
         : loaded
           ? connectable
-            ? "Connect Codex"
-            : "Codex Check"
-          : "Checking Codex";
+            ? t("status.text.connect")
+            : t("status.text.check")
+          : t("status.text.loading");
     }
 
     const detail = host.querySelector(".bridge-status__detail");
@@ -1774,7 +2056,7 @@
         action.hidden = true;
       } else {
         action.hidden = false;
-        action.textContent = connectable ? "연결" : "확인";
+        action.textContent = connectable ? t("status.action.connect") : t("status.action.check");
         action.disabled = state.busy || !connectable;
       }
     }
@@ -1782,15 +2064,13 @@
 
   function renderConnectionPrompt() {
     const codex = state.codex || {};
-    const actionLabel = codex.connectable ? "Codex 연결" : "상태 확인";
-    const body = codex.connected
-      ? "Codex 연결 상태가 정상이라서, 이제 날짜를 고르면 바로 생성할 수 있어요."
-      : codex.detail || "먼저 Codex 로그인 상태를 확인해야 해요.";
+    const actionLabel = codex.connectable ? t("status.text.connect") : t("status.text.check");
+    const body = codex.connected ? t("connect.body.connected") : t("connect.body.default");
 
     const content = [
-      el("div", { class: "empty__badge" }, "Codex"),
+      el("div", { class: "empty__badge" }, t("connect.badge")),
       el("h2", { class: "empty__title" }, [
-        document.createTextNode("먼저 codex를 연결해주세요"),
+        document.createTextNode(t("connect.title")),
       ]),
       el("p", { class: "empty__copy" }, body),
     ];
@@ -1825,8 +2105,10 @@
     showToast._t = setTimeout(() => toast.classList.remove("is-visible"), 1600);
   }
 
-  function setBusy(busy) {
+  function setBusy(busy, kind = null) {
+    const previousKind = state.busyKind;
     state.busy = busy;
+    state.busyKind = busy ? kind || state.busyKind : null;
     const btn = document.querySelector(".cta");
     if (btn) {
       btn.disabled = busy || (state.codex.loaded && !state.codex.connected);
@@ -1835,11 +2117,23 @@
       if (spinner) spinner.hidden = !busy;
       if (label) {
         label.textContent = busy
-          ? "생성 중..."
+          ? t("generate.busy")
           : state.codex.loaded && !state.codex.connected
-            ? "Codex 연결 후 생성"
+            ? t("generate.connect")
             : computeGenerateLabel();
       }
+    }
+    if (state.busy && state.busyKind === "generate") {
+      renderStage();
+      startLoadingPulse();
+      updateLoadingView();
+    } else if (!state.busy && previousKind === "generate") {
+      stopLoadingPulse();
+      state.generationMeta = null;
+      state.generationProgress = null;
+      renderStage();
+    } else if (!state.busy) {
+      stopLoadingPulse();
     }
     renderCodexStatus();
   }
@@ -1849,7 +2143,14 @@
     let timeoutId;
     const timer = new Promise((_, reject) => {
       timeoutId = setTimeout(
-        () => reject(new Error(`응답이 ${Math.round(ms / 1000)}초 안에 오지 않아요. Chronicle 폴더가 올바른지 확인해 주세요.`)),
+        () =>
+          reject(
+            new Error(
+              t("warning.timeout", {
+                seconds: Math.round(ms / 1000),
+              }),
+            ),
+          ),
         ms,
       );
     });
@@ -1859,21 +2160,27 @@
   async function generate() {
     const bridge = api();
     if (!bridge) {
-      setWarning("WebView 브리지가 준비되지 않았어요.");
+      setWarning(t("warning.webview"));
       return;
     }
     if (state.codex.loaded && !state.codex.connected) {
       state.data = null;
       renderStage();
-      setFooter("먼저 Codex를 연결해 주세요.");
-      setWarning("먼저 codex를 연결해주세요.");
+      setFooter(t("footer.connectFirst"));
+      setWarning(t("connect.title"));
       return;
     }
     if (state.busy) return;
-    setBusy(true);
-    toggleMenu(false);
     const language = getOutputLanguageOption();
-    setFooter(`Chronicle 요약을 읽고 선택한 날짜의 기록을 ${language.label}로 만드는 중이에요...`);
+    state.generationMeta = {
+      targetDate: state.config.targetDate,
+      languageKey: language.key,
+      startedAt: Date.now(),
+    };
+    syncGenerationProgress(null);
+    setBusy(true, "generate");
+    toggleMenu(false);
+    setFooter(t("footer.generating", { language: displayLanguageLabel(language.key) }));
     setWarning("");
     try {
       const payload = await withTimeout(
@@ -1886,13 +2193,15 @@
           auto_save: state.config.autoSave,
           ...currentLanguagePayload(),
         }),
-        90000,
+        GENERATION_REQUEST_TIMEOUT_MS,
       );
       if (payload?.error) {
-        setFooter("생성에 실패했어요.");
+        syncGenerationProgress(payload.progress);
+        setFooter(t("footer.generateFailed"));
         setWarning(payload.error);
         return;
       }
+      syncGenerationProgress(payload.progress);
       state.data = payload;
       state.config.targetDate = payload.target_date;
       state.selectedDateIso = payload.target_date;
@@ -1906,12 +2215,16 @@
       syncSegmented();
       renderStage();
       setFooter(
-        `${formatKoreanDate(payload.target_date)} 일기를 ${language.label}로 바로 열었어요. ${payload.saved_path ? "자동 저장도 완료했어요." : ""}`,
+        t("footer.generated", {
+          date: formatDisplayDate(payload.target_date),
+          language: displayLanguageLabel(language.key),
+          saved: payload.saved_path ? ` ${t("foot.saved")}.` : "",
+        }),
       );
       if (payload.warnings?.length) setWarning(payload.warnings.join(" · "));
       refreshLists();
     } catch (err) {
-      setFooter("생성에 실패했어요.");
+      setFooter(t("footer.generateFailed"));
       setWarning(String(err && err.message ? err.message : err));
     } finally {
       setBusy(false);
@@ -1921,36 +2234,36 @@
   async function connectCodex() {
     const bridge = api();
     if (!bridge) {
-      setWarning("WebView 브리지가 준비되지 않았어요.");
+      setWarning(t("warning.webview"));
       return;
     }
     if (!state.codex.loaded || !state.codex.connected) {
-      setFooter("Codex 연결 상태를 확인하는 중이에요.");
+      setFooter(t("status.text.loading"));
     }
-    setBusy(true);
+    setBusy(true, "connect");
     try {
       const payload = await bridge.connect_codex();
       if (payload?.error) {
         setWarning(payload.error);
-        setFooter(payload.error);
+        setFooter(t("footer.connectFailed"));
         return;
       }
       if (payload?.codex) {
         syncCodexStatus(payload.codex);
       }
       if (payload?.connected && payload?.codex?.connected) {
-        setFooter("날짜를 고르고 기록을 생성하면 앱 안에서 바로 일기와 보고서를 볼 수 있어요.");
-        showToast("Codex 준비 완료");
+        setFooter(t("footer.connected"));
+        showToast(t("toast.codexReady"));
       } else if (payload?.message) {
-        setFooter(payload.message);
-        showToast(payload.message);
+        setFooter(t("footer.rechecked"));
+        setWarning("");
       } else {
-        setFooter("Codex 연결 상태를 다시 확인했어요.");
+        setFooter(t("footer.rechecked"));
       }
       if (!state.data) renderStage();
     } catch (err) {
       setWarning(String(err && err.message ? err.message : err));
-      setFooter("Codex 연결에 실패했어요.");
+      setFooter(t("footer.connectFailed"));
     } finally {
       setBusy(false);
     }
@@ -1972,12 +2285,14 @@
     if (iso) {
       const connectionMessage =
         state.codex.loaded && !state.codex.connected
-          ? "먼저 Codex를 연결해 주세요."
+          ? t("footer.connectFirst")
           : "";
       setFooter(
         reasonText ||
           connectionMessage ||
-          `${formatKoreanDate(iso)} 저장된 일기가 아직 없어요. 새로 생성하면 이 날짜 기록으로 덮어써집니다.`,
+          t("footer.noSavedForDate", {
+            date: formatDisplayDate(iso),
+          }),
       );
     }
     setWarning("");
@@ -1995,7 +2310,11 @@
           showEmptyDateState(iso);
           return;
         }
-        setFooter(`${iso} 일기를 열 수 없어요.`);
+        setFooter(
+          t("footer.openDiaryFailed", {
+            date: formatDisplayDate(iso),
+          }),
+        );
         setWarning(payload.error);
         return;
       }
@@ -2012,7 +2331,11 @@
       renderSideDates();
       syncSegmented();
       renderStage();
-      setFooter(`${formatKoreanDate(iso)} 일기를 열었어요.`);
+      setFooter(
+        t("footer.openedDiary", {
+          date: formatDisplayDate(iso),
+        }),
+      );
       setWarning("");
     } catch (err) {
       setWarning(String(err));
@@ -2029,9 +2352,9 @@
     const bridge = api();
     if (!bridge) return;
     try {
-      const payload = await bridge.load_week(iso, state.config.outDir);
+      const payload = await bridge.load_week(iso, state.config.outDir, currentUiLanguage());
       if (payload?.error) {
-        setFooter("주간 보기를 열 수 없어요.");
+        setFooter(t("footer.openWeekFailed"));
         setWarning(payload.error);
         return;
       }
@@ -2048,7 +2371,11 @@
       renderSideDates();
       syncSegmented();
       renderStage();
-      setFooter(`${payload.label} 주간 보기를 열었어요.`);
+      setFooter(
+        t("footer.openedWeek", {
+          label: payload.label,
+        }),
+      );
       setWarning("");
     } catch (err) {
       setWarning(String(err));
@@ -2080,31 +2407,31 @@
     else state.config.outDir = picked;
     renderConfig();
     refreshLists();
-    showToast(kind === "source" ? "입력 폴더를 바꿨어요" : "출력 폴더를 바꿨어요");
+    showToast(kind === "source" ? t("toast.sourceChanged") : t("toast.outputChanged"));
   }
 
   async function copyCurrentView() {
     if (!state.data) {
-      showToast("복사할 내용이 없어요");
+      showToast(t("toast.nothingToCopy"));
       return;
     }
     const views = state.data.views || {};
     const key = state.view === "raw" ? "full" : state.view;
     const text = views[key] || views.full || state.data.markdown || "";
     if (!text.trim()) {
-      showToast("복사할 내용이 없어요");
+      showToast(t("toast.nothingToCopy"));
       return;
     }
     try {
       await navigator.clipboard.writeText(text);
-      showToast("복사했어요");
+      showToast(t("toast.copied"));
     } catch {
       const bridge = api();
       if (bridge) {
         await bridge.copy_to_clipboard(text);
-        showToast("복사했어요");
+        showToast(t("toast.copied"));
       } else {
-        showToast("복사에 실패했어요");
+        showToast(t("toast.copyFailed"));
       }
     }
   }
@@ -2112,10 +2439,13 @@
   async function openExternal() {
     const bridge = api();
     if (!bridge || !state.data?.saved_path) {
-      showToast("저장된 파일이 없어요");
+      showToast(t("toast.noSavedFile"));
       return;
     }
-    await bridge.open_external(state.data.saved_path);
+    const opened = await bridge.open_external(state.data.saved_path);
+    if (!opened) {
+      showToast(t("toast.openExternalFailed"));
+    }
   }
 
   /* Segmented / view ---------------------------------------------------- */
@@ -2147,7 +2477,7 @@
       setCalendarCursor(iso);
       renderConfig();
       syncTargetDateView();
-      showToast("오늘 기준 날짜로 맞췄어요");
+      showToast(t("toast.todayAdjusted"));
     } catch (err) {
       setWarning(String(err && err.message ? err.message : err));
     }
@@ -2182,7 +2512,7 @@
     setNavActive();
     renderConfig();
     renderStage();
-    setFooter("캘린더 탭에서 날짜를 골라 기록을 이어서 볼 수 있어요.");
+    setFooter(t("footer.calendarHint"));
     setWarning("");
   }
 
@@ -2259,7 +2589,11 @@
     if (outputLanguage) {
       outputLanguage.addEventListener("change", (e) => {
         setOutputLanguage(e.target.value);
-        showToast(`출력 언어를 ${getOutputLanguageOption().label}로 바꿨어요`);
+        showToast(
+          t("toast.languageChanged", {
+            language: displayLanguageLabel(),
+          }),
+        );
       });
     }
 
@@ -2399,12 +2733,13 @@
   async function boot() {
     hydrateClientPreferences();
     installRuntimeUi();
+    applyStaticUiCopy();
     bindEvents();
     setNavActive();
     syncSegmented();
     renderStage();
     renderConfig();
-    setFooter("날짜를 고르고 기록을 생성하면 앱 안에서 바로 일기와 보고서를 볼 수 있어요.");
+    setFooter(t("footer.ready"));
 
     await new Promise((resolve) => {
       if (api()) return resolve();
@@ -2422,6 +2757,7 @@
         message: initial.status || "",
         detail: initial.status || "",
       });
+      syncGenerationProgress(initial.progress);
       state.dates = initial.entries?.dates || [];
       state.weeks = initial.entries?.weeks || [];
       renderSideDates();
@@ -2430,6 +2766,10 @@
       console.error(err);
     }
   }
+
+  window.__codexDiaryOnProgress = function onCodexDiaryProgress(payload) {
+    syncGenerationProgress(payload);
+  };
 
   document.addEventListener("DOMContentLoaded", boot);
 })();

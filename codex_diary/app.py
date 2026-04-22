@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .chronicle import resolve_target_date
+from .diary_length import (
+    DEFAULT_DIARY_LENGTH_CODE,
+    get_diary_length_option,
+    normalize_diary_length,
+    supported_diary_length_codes,
+)
 from .diary_structure import structure_diary
 from .generator import build_diary, legacy_output_paths
 from .i18n import (
@@ -23,7 +29,12 @@ from .i18n import (
     normalize_language_code,
     supported_language_codes,
 )
-from .llm import CODEX_NOT_CONNECTED_MESSAGE, codex_login_command_args, get_codex_status
+from .llm import (
+    CODEX_NOT_CONNECTED_MESSAGE,
+    GenerationCancelledError,
+    codex_login_command_args,
+    get_codex_status,
+)
 from .markdown_html import render_markdown
 
 DEFAULT_SOURCE_DIR = "~/.codex/memories_extensions/chronicle/resources"
@@ -31,6 +42,12 @@ APP_NAME = "Codex Diary"
 WINDOW_TITLE = "Codex Diary"
 WINDOW_SIZE = (1280, 860)
 WINDOW_MIN = (1040, 720)
+PROGRESS_PHASE_KEYS = {
+    "collect": ("loading.step.collect", "loading.detail.collect"),
+    "organize": ("loading.step.organize", "loading.detail.organize"),
+    "write": ("loading.step.write", "loading.detail.write"),
+    "finish": ("loading.step.finish", "loading.detail.finish"),
+}
 
 PREVIEW_EMPTY_MESSAGE = (
     "# Codex Diary\n\n"
@@ -388,9 +405,11 @@ class AppConfig:
     source_dir: Path
     out_dir: Path
     output_language_code: str
+    diary_length_code: str
 
     def to_json(self) -> dict[str, Any]:
         language = get_language_option(self.output_language_code)
+        diary_length = get_diary_length_option(self.diary_length_code)
         return {
             "target_date": self.target_date.isoformat(),
             "boundary_hour": self.boundary_hour,
@@ -398,6 +417,8 @@ class AppConfig:
             "out_dir": str(self.out_dir.expanduser()),
             "output_language_code": language.code,
             "output_language": language.label,
+            "diary_length_code": diary_length.code,
+            "diary_length": diary_length.label,
         }
 
 
@@ -411,12 +432,119 @@ class DiaryBridge:
             source_dir=Path(DEFAULT_SOURCE_DIR).expanduser(),
             out_dir=default_output_dir(),
             output_language_code=DEFAULT_LANGUAGE_CODE,
+            diary_length_code=DEFAULT_DIARY_LENGTH_CODE,
         )
         self._generation_lock = threading.Lock()
+        self._progress_lock = threading.Lock()
+        self._cancel_requested = threading.Event()
         self._window = None
+        self._progress = self._build_progress_snapshot(
+            status="idle",
+            phase=None,
+            percent=0,
+            target_date=self.config.target_date.isoformat(),
+            output_language_code=self.config.output_language_code,
+            mode="finalize",
+            stats={"diary_length": self.config.diary_length_code},
+        )
 
     def attach_window(self, window) -> None:
         self._window = window
+
+    @staticmethod
+    def _build_progress_snapshot(
+        *,
+        status: str,
+        phase: str | None,
+        percent: int | None = None,
+        current: int | None = None,
+        total: int | None = None,
+        step_key: str | None = None,
+        detail_key: str | None = None,
+        target_date: str | None = None,
+        output_language_code: str | None = None,
+        mode: str | None = None,
+        stats: dict[str, Any] | None = None,
+        indeterminate: bool = False,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        default_step_key, default_detail_key = PROGRESS_PHASE_KEYS.get(phase or "", (None, None))
+        normalized_percent = None if percent is None else max(0, min(100, int(percent)))
+        return {
+            "status": status,
+            "phase": phase,
+            "percent": normalized_percent,
+            "current": current,
+            "total": total,
+            "step_key": step_key or default_step_key,
+            "detail_key": detail_key or default_detail_key,
+            "target_date": target_date,
+            "output_language_code": output_language_code,
+            "mode": mode,
+            "stats": dict(stats or {}),
+            "indeterminate": bool(indeterminate),
+            "error": error,
+        }
+
+    def _current_progress(self) -> dict[str, Any]:
+        with self._progress_lock:
+            return {
+                **self._progress,
+                "stats": dict(self._progress.get("stats") or {}),
+            }
+
+    def _dispatch_progress(self, snapshot: dict[str, Any]) -> None:
+        if self._window is None:
+            return
+        payload_json = json.dumps(snapshot, ensure_ascii=False)
+        script = (
+            "(function(){"
+            f"const payload={payload_json};"
+            "if(window.__codexDiaryOnProgress){window.__codexDiaryOnProgress(payload);}"
+            "window.dispatchEvent(new CustomEvent('codex-diary:progress',{detail:payload}));"
+            "})();"
+        )
+        try:
+            self._window.evaluate_js(script)
+        except Exception:
+            return
+
+    def _update_progress(
+        self,
+        *,
+        status: str,
+        phase: str | None,
+        percent: int | None = None,
+        current: int | None = None,
+        total: int | None = None,
+        step_key: str | None = None,
+        detail_key: str | None = None,
+        target_date: str | None = None,
+        output_language_code: str | None = None,
+        mode: str | None = None,
+        stats: dict[str, Any] | None = None,
+        indeterminate: bool = False,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        snapshot = self._build_progress_snapshot(
+            status=status,
+            phase=phase,
+            percent=percent,
+            current=current,
+            total=total,
+            step_key=step_key,
+            detail_key=detail_key,
+            target_date=target_date,
+            output_language_code=output_language_code,
+            mode=mode,
+            stats=stats,
+            indeterminate=indeterminate,
+            error=error,
+        )
+        with self._progress_lock:
+            self._progress = snapshot
+        self._dispatch_progress(snapshot)
+        return snapshot
 
     def _codex_status_details(self) -> dict[str, Any]:
         status = get_codex_status()
@@ -457,10 +585,15 @@ class DiaryBridge:
             "entries": list_saved_entries(self.config.out_dir),
             "status": codex["message"] if not codex["connected"] else "날짜를 고르고 `생성`을 누르면 앱 안에서 바로 일기를 볼 수 있습니다.",
             "codex": codex,
+            "progress": self._current_progress(),
             "generation_available": codex["connected"],
             "supported_output_languages": [
                 {"code": code, "label": get_language_option(code).label}
                 for code in supported_language_codes()
+            ],
+            "supported_diary_lengths": [
+                {"code": code, "label": get_diary_length_option(code).label}
+                for code in supported_diary_length_codes()
             ],
         }
 
@@ -561,18 +694,66 @@ class DiaryBridge:
 
     # ---- Generation & loading ------------------------------------------
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = self._coerce_request(payload)
         codex = self._codex_status_details()
         if not codex["connected"]:
-            return {"error": "먼저 codex를 연결해주세요.", "codex": codex, "generation_available": False}
+            progress = self._update_progress(
+                status="failed",
+                phase="write",
+                percent=0,
+                target_date=request["target_date"].isoformat(),
+                output_language_code=request["output_language_code"],
+                mode=request["mode"],
+                error="먼저 codex를 연결해주세요.",
+            )
+            return {
+                "error": "먼저 codex를 연결해주세요.",
+                "codex": codex,
+                "generation_available": False,
+                "progress": progress,
+            }
         if not self._generation_lock.acquire(blocking=False):
-            return {"error": "이미 생성이 진행 중입니다."}
+            return {
+                "error": "이미 생성이 진행 중입니다.",
+                "progress": self._current_progress(),
+            }
         try:
-            request = self._coerce_request(payload)
             self.config.target_date = request["target_date"]
             self.config.boundary_hour = request["boundary_hour"]
             self.config.source_dir = request["source_dir"]
             self.config.out_dir = request["out_dir"]
             self.config.output_language_code = request["output_language_code"]
+            target_date_iso = request["target_date"].isoformat()
+
+            def report_progress(update: dict[str, Any]) -> dict[str, Any]:
+                previous_stats = dict(self._current_progress().get("stats") or {})
+                next_stats = {
+                    **previous_stats,
+                    **dict(update.get("stats") or {}),
+                }
+                return self._update_progress(
+                    status=str(update.get("status") or "running"),
+                    phase=update.get("phase"),
+                    percent=update.get("percent"),
+                    current=update.get("current"),
+                    total=update.get("total"),
+                    step_key=update.get("step_key"),
+                    detail_key=update.get("detail_key"),
+                    target_date=target_date_iso,
+                    output_language_code=request["output_language_code"],
+                    mode=request["mode"],
+                    stats=next_stats,
+                    indeterminate=bool(update.get("indeterminate", False)),
+                    error=update.get("error"),
+                )
+
+            report_progress(
+                {
+                    "status": "running",
+                    "phase": "collect",
+                    "percent": 4,
+                }
+            )
 
             result = build_diary(
                 target_date=request["target_date"],
@@ -581,9 +762,18 @@ class DiaryBridge:
                 out_dir=request["out_dir"],
                 day_boundary_hour=request["boundary_hour"],
                 output_language=request["output_language_code"],
+                progress=report_progress,
             )
             saved_path: Optional[Path] = None
             if request["auto_save"]:
+                report_progress(
+                    {
+                        "status": "running",
+                        "phase": "finish",
+                        "percent": 96,
+                        "stats": {**dict(result.stats), "events_selected": dict(result.stats).get("events_selected")},
+                    }
+                )
                 for legacy_path in legacy_output_paths(request["out_dir"], result.target_date.isoformat()):
                     if legacy_path.exists():
                         legacy_path.unlink()
@@ -592,6 +782,14 @@ class DiaryBridge:
                 saved_path = result.output_path
 
             payload = render_payload(result.markdown, output_language_code=request["output_language_code"])
+            completed_progress = report_progress(
+                {
+                    "status": "completed",
+                    "phase": "finish",
+                    "percent": 100,
+                    "stats": dict(result.stats),
+                }
+            )
             payload.update(
                 {
                     "target_date": result.target_date.isoformat(),
@@ -602,11 +800,28 @@ class DiaryBridge:
                     "saved_path": str(saved_path) if saved_path else None,
                     "output_language_code": request["output_language_code"],
                     "output_language": get_language_option(request["output_language_code"]).label,
+                    "progress": completed_progress,
                 }
             )
             return payload
         except Exception as exc:  # noqa: BLE001 — surface all errors to UI
-            return {"error": str(exc)}
+            current = self._current_progress()
+            failed_progress = self._update_progress(
+                status="failed",
+                phase=current.get("phase") or "finish",
+                percent=current.get("percent"),
+                current=current.get("current"),
+                total=current.get("total"),
+                step_key=current.get("step_key"),
+                detail_key=current.get("detail_key"),
+                target_date=request["target_date"].isoformat(),
+                output_language_code=request["output_language_code"],
+                mode=request["mode"],
+                stats=dict(current.get("stats") or {}),
+                indeterminate=False,
+                error=str(exc),
+            )
+            return {"error": str(exc), "progress": failed_progress}
         finally:
             self._generation_lock.release()
 

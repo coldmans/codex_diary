@@ -1,13 +1,13 @@
 # UI Assets
 
 Drop mascot images into this folder to replace the inline SVG placeholders
-used by the desktop app.  All four files are optional — if a file is missing,
+used by the desktop app.  All files are optional — if a file is missing,
 the app falls back to a CSS/SVG cloud shape.
 
 | Filename | Where it appears |
 |---|---|
 | `mascot-empty.png` | Empty-state center illustration (reading with book) |
-| `mascot-diary.png` | Diary view right-side illustration (desk scene) |
+| `mascot-diary.png` | Diary view right-side illustration; also reused in the loading screen |
 | `mascot-calendar.png` | Calendar view illustration |
 | `app-icon.png` | Source PNG for the macOS app icon; also used in the sidebar brand and diary heading |
 
