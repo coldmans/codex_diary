@@ -1,8 +1,17 @@
 from datetime import date, datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from codex_diary.generator import build_minor_timeline, dedupe_events, fallback_markdown
+from codex_diary.llm import LLMError, load_provider_from_codex
+from codex_diary.generator import (
+    build_minor_timeline,
+    dedupe_events,
+    fallback_markdown,
+    legacy_output_paths,
+    resolve_output_path,
+)
 from codex_diary.models import ChronicleSource, Event
 from codex_diary.redaction import mask_sensitive_text
 
@@ -119,6 +128,64 @@ class ProcessingTests(unittest.TestCase):
         self.assertIn("## 오늘의 일기 버전", markdown)
         self.assertIn("### 오늘 한 일", markdown)
         self.assertIn("SQLite 기준 테스트", markdown)
+
+    def test_fallback_markdown_supports_english_output(self) -> None:
+        source = make_source("bundle-en.md", "10min")
+        events = [
+            Event(
+                source=source,
+                order=0,
+                section_title="Planning",
+                text="The visible plan proposed an MVP with backend, frontend, and deployment steps.",
+                tags=("decision",),
+                entities=("K-Context Guide",),
+            ),
+            Event(
+                source=source,
+                order=1,
+                section_title="Testing",
+                text="tests still needing follow-up: `backend/test/database.test.js` still appeared to reference `test.sqlite`",
+                tags=("blocker", "next_action"),
+                entities=("chargeCat", "backend/test/database.test.js", "test.sqlite"),
+            ),
+        ]
+        markdown = fallback_markdown(
+            target_date="2026-04-21",
+            mode="finalize",
+            stats={"used_10min": 1, "used_6h": 0},
+            events=events,
+            output_language="en",
+        )
+        self.assertIn("## Work Report", markdown)
+        self.assertIn("## Diary Version", markdown)
+        self.assertIn("### What I Did Today", markdown)
+        self.assertIn("SQLite-oriented tests", markdown)
+
+    def test_output_path_is_single_file_per_day(self) -> None:
+        out_dir = Path("/tmp/codex-diary-output")
+        self.assertEqual(
+            resolve_output_path(out_dir, "finalize", "2026-04-21"),
+            out_dir / "2026-04-21.md",
+        )
+        self.assertEqual(
+            resolve_output_path(out_dir, "draft-update", "2026-04-21"),
+            out_dir / "2026-04-21.md",
+        )
+        self.assertEqual(
+            legacy_output_paths(out_dir, "2026-04-21"),
+            [out_dir / "drafts" / "2026-04-21.md"],
+        )
+
+    def test_codex_provider_rejects_unconnected_login_status(self) -> None:
+        def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+            if args[:3] == ["/opt/homebrew/bin/codex", "login", "status"]:
+                return SimpleNamespace(returncode=0, stdout="Not logged in", stderr="")
+            raise AssertionError("codex exec should not run before login is confirmed")
+
+        with patch("codex_diary.llm.subprocess.run", side_effect=fake_run):
+            with self.assertRaises(LLMError) as ctx:
+                load_provider_from_codex()
+        self.assertIn("먼저 codex를 연결해주세요", str(ctx.exception))
 
 
 if __name__ == "__main__":

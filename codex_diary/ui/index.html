@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Diary</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <header class="brand">
+          <div class="brand__mascot">
+            <img src="assets/app-icon.png" alt="" onerror="this.replaceWith(window.__mascotSvg('brand'))" />
+          </div>
+          <div class="brand__text">
+            <div class="brand__title">Codex Diary</div>
+            <div class="brand__sub">Chronicle 요약을 일기로</div>
+          </div>
+        </header>
+
+        <nav class="side-nav">
+          <button type="button" class="side-nav__item is-active" data-nav="diary">
+            <span class="side-nav__icon">
+              <svg viewBox="0 0 20 20" fill="none" width="16" height="16" aria-hidden="true">
+                <path d="M4 3.5A1.5 1.5 0 0 1 5.5 2H14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5.5A1.5 1.5 0 0 1 4 16.5v-13Z" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M8 7h5M8 10.5h5M8 14h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>일기</span>
+          </button>
+          <button type="button" class="side-nav__item" data-nav="calendar">
+            <span class="side-nav__icon">
+              <svg viewBox="0 0 20 20" fill="none" width="16" height="16" aria-hidden="true">
+                <rect x="3" y="5" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M3 8h14" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M7 3v3M13 3v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>캘린더</span>
+          </button>
+          <button type="button" class="side-nav__item" data-nav="archive">
+            <span class="side-nav__icon">
+              <svg viewBox="0 0 20 20" fill="none" width="16" height="16" aria-hidden="true">
+                <rect x="4" y="3" width="12" height="14" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M7 7h6M7 10.5h6M7 14h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>보관함</span>
+          </button>
+        </nav>
+
+        <section class="side-section">
+          <div class="side-section__head">
+            <span>최근 날짜</span>
+            <span id="date-count" class="side-section__count">0</span>
+          </div>
+          <div class="side-dates" id="date-list"></div>
+        </section>
+
+        <section class="side-section side-section--weeks">
+          <div class="side-section__head">
+            <span>주간 모아보기</span>
+            <span id="week-count" class="side-section__count">0</span>
+          </div>
+          <div class="side-dates side-dates--weeks" id="week-list"></div>
+        </section>
+
+        <aside class="side-quote">
+          <div class="side-quote__icon">🌷</div>
+          <div class="side-quote__text">
+            매일의 기록이<br />내일의 나를 만든다 <span class="heart">♡</span>
+          </div>
+        </aside>
+
+        <button type="button" class="side-settings" data-action="toggle-settings">
+          <span class="side-settings__icon">⚙︎</span>
+          <span>설정</span>
+        </button>
+      </aside>
+
+      <main class="main">
+        <div class="paper">
+          <header class="paper__top">
+            <div class="paper__top-left">
+              <button type="button" class="round-btn" data-action="date-prev" title="전날">
+                <svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true">
+                  <path d="M12 4l-6 6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <div class="paper__date-block">
+                <div class="paper__date-label">기준 날짜</div>
+                <div class="paper__date">
+                  <div class="paper__date-main">
+                    <span id="date-main">2026. 04. 21.</span>
+                    <span id="date-weekday" class="paper__weekday">화요일</span>
+                  </div>
+                  <input id="date-input" type="date" aria-label="날짜 선택" />
+                </div>
+                <div class="paper__date-meta">
+                  <button type="button" class="pill-btn pill-btn--accent" data-action="jump-today">오늘로</button>
+                  <span id="boundary-chip" class="pill-btn pill-btn--static">04시 기준</span>
+                </div>
+              </div>
+              <button type="button" class="round-btn" data-action="date-next" title="다음날">
+                <svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true">
+                  <path d="M8 4l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <button type="button" class="round-btn" data-action="open-picker" title="날짜 선택">
+                <svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true">
+                  <rect x="3" y="5" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.7"/>
+                  <path d="M3 8.5h14" stroke="currentColor" stroke-width="1.7"/>
+                  <path d="M7 3v3M13 3v3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                </svg>
+              </button>
+            </div>
+
+            <div class="paper__top-right">
+              <div class="paper__toolbar-meta">
+                <div id="codex-status" class="bridge-status" aria-live="polite">
+                  <span class="bridge-status__dot"></span>
+                  <span class="bridge-status__text">Codex 상태를 확인하는 중이에요</span>
+                  <span class="bridge-status__detail">잠시만 기다려 주세요.</span>
+                  <button type="button" class="bridge-status__action" data-action="codex-connect">연결하기</button>
+                </div>
+              </div>
+              <div class="paper__toolbar-actions">
+                <div class="segmented" id="view-segmented">
+                  <label><input type="radio" name="view" value="diary" checked /><span>일기</span></label>
+                  <label><input type="radio" name="view" value="report" /><span>보고서</span></label>
+                  <label><input type="radio" name="view" value="raw" /><span>Markdown</span></label>
+                </div>
+                <button type="button" class="cta" data-action="generate">
+                  <span class="cta__spark">✦</span>
+                  <span class="cta__label">선택 날짜 생성</span>
+                  <span class="spinner" hidden></span>
+                </button>
+                <div class="menu-wrap">
+                  <button type="button" class="round-btn round-btn--ghost" data-action="toggle-menu" title="더 보기" aria-expanded="false">
+                    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                      <circle cx="4.5" cy="10" r="1.3" fill="currentColor"/>
+                      <circle cx="10" cy="10" r="1.3" fill="currentColor"/>
+                      <circle cx="15.5" cy="10" r="1.3" fill="currentColor"/>
+                    </svg>
+                  </button>
+                  <div id="overflow-menu" class="menu" hidden>
+                    <button type="button" data-action="view-week">해당 주 보기</button>
+                    <button type="button" data-action="copy">현재 보기 복사</button>
+                    <button type="button" data-action="open-external">외부 앱으로 열기</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          <section id="stage" class="paper__body"></section>
+
+          <footer id="paper-foot" class="paper__foot">
+            <div id="foot-main" class="paper__foot-hint">
+              <span class="paper__foot-icon">💡</span>
+              <span>날짜를 고르고 기록을 생성하면 앱 안에서 바로 일기와 보고서를 볼 수 있어요.</span>
+            </div>
+          </footer>
+        </div>
+
+        <div id="status-warning" class="status-warning" hidden></div>
+      </main>
+
+      <aside id="settings-panel" class="settings" hidden aria-label="설정 패널">
+        <div class="settings__head">
+          <div class="settings__head-copy">
+            <div class="settings__eyebrow">Preferences</div>
+            <div class="settings__title">설정</div>
+          </div>
+          <button type="button" class="round-btn round-btn--ghost" data-action="toggle-settings" title="닫기">✕</button>
+        </div>
+
+        <section class="settings__intro" aria-label="설정 요약">
+          <div class="settings__intro-copy">
+            <strong>기록 흐름을 차분하게 맞춰 둘 수 있어요.</strong>
+            <p>출력 언어, 하루 경계 시각, 저장 방식을 먼저 정해 두면 매일 같은 리듬으로 일기를 만들 수 있어요.</p>
+          </div>
+          <div class="settings__intro-badge">Default output: English</div>
+        </section>
+
+        <section class="settings__section" aria-labelledby="settings-output-title">
+          <div id="settings-output-title" class="settings__section-title">Output</div>
+
+          <label class="setting setting--card">
+            <span>Output language</span>
+            <div class="setting__field setting__field--select">
+              <select id="output-language" name="output-language" class="select" aria-label="Output language">
+                <option value="en" selected>English</option>
+                <option value="ko">Korean (한국어)</option>
+                <option value="ja">Japanese (日本語)</option>
+                <option value="zh">Chinese (中文)</option>
+                <option value="fr">French (Français)</option>
+                <option value="de">German (Deutsch)</option>
+                <option value="es">Spanish (Español)</option>
+                <option value="vi">Vietnamese (Tiếng Việt)</option>
+                <option value="th">Thai (ไทย)</option>
+                <option value="ru">Russian (Русский)</option>
+                <option value="hi">Hindi (हिन्दी)</option>
+              </select>
+            </div>
+            <span class="setting__hint">새로 생성하는 출력의 기본 언어예요. 필요할 때 다른 언어로 바꿔 둘 수 있어요.</span>
+          </label>
+
+          <label class="setting setting--card">
+            <span>하루 경계 시각</span>
+            <div class="setting__row">
+              <button type="button" class="ghost" data-action="boundary-minus">−1h</button>
+              <output id="boundary-label">04시</output>
+              <button type="button" class="ghost" data-action="boundary-plus">+1h</button>
+            </div>
+            <span class="setting__hint">이 시각 이전 기록은 전날 일기에 포함돼요.</span>
+          </label>
+
+          <label class="setting setting--card">
+            <span>생성 모드</span>
+            <div class="segmented segmented--block">
+              <label><input type="radio" name="mode" value="finalize" checked /><span>최종 일기</span></label>
+              <label><input type="radio" name="mode" value="draft-update" /><span>초안 갱신</span></label>
+            </div>
+          </label>
+
+          <label class="setting setting--card setting--check">
+            <input id="auto-save" type="checkbox" checked />
+            <div class="setting__check-copy">
+              <span class="setting__check-title">생성 후 자동으로 저장하기</span>
+              <span class="setting__hint">생성 직후 결과를 출력 폴더에 바로 저장해요.</span>
+            </div>
+          </label>
+        </section>
+
+        <section class="settings__section" aria-labelledby="settings-paths-title">
+          <div id="settings-paths-title" class="settings__section-title">Paths</div>
+
+          <label class="setting setting--card">
+            <span>입력 폴더</span>
+            <div class="setting__row">
+              <code id="source-path" class="path"></code>
+              <button type="button" class="ghost" data-action="pick-source">변경</button>
+            </div>
+          </label>
+
+          <label class="setting setting--card">
+            <span>출력 폴더</span>
+            <div class="setting__row">
+              <code id="out-path" class="path"></code>
+              <button type="button" class="ghost" data-action="pick-out">변경</button>
+            </div>
+          </label>
+        </section>
+      </aside>
+    </div>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

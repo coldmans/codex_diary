@@ -5,7 +5,14 @@ from pathlib import Path
 import sys
 
 from .chronicle import resolve_target_date
-from .generator import build_diary
+from .generator import build_diary, legacy_output_paths
+from .llm import LLMError
+from .i18n import (
+    DEFAULT_LANGUAGE_CODE,
+    get_language_option,
+    normalize_language_code,
+    supported_language_codes,
+)
 
 
 def repository_root() -> Path:
@@ -15,7 +22,7 @@ def repository_root() -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codex-diary",
-        description="Chronicle Markdown 요약으로 한국어 작업 일기 초안을 생성합니다.",
+        description="Chronicle Markdown 요약으로 작업 일기 초안을 생성합니다.",
     )
     parser.add_argument(
         "mode",
@@ -49,6 +56,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=4,
         help="하루 경계 시각(로컬 타임존 기준, 기본값: 4). 0~23 사이 정수여야 합니다.",
     )
+    parser.add_argument(
+        "--language",
+        "--output-language",
+        dest="language",
+        default=DEFAULT_LANGUAGE_CODE,
+        help=(
+            "출력 언어를 지정합니다. "
+            f"지원 코드: {', '.join(supported_language_codes())}. 기본값은 en입니다."
+        ),
+    )
     return parser
 
 
@@ -58,6 +75,14 @@ def run(argv: list[str] | None = None) -> int:
 
     if not 0 <= args.day_boundary_hour <= 23:
         print("--day-boundary-hour는 0 이상 23 이하의 정수여야 합니다.", file=sys.stderr)
+        return 2
+    language_code = normalize_language_code(args.language)
+    if not language_code:
+        print(
+            "--language는 지원되는 언어 코드 또는 이름이어야 합니다. "
+            f"지원 코드: {', '.join(supported_language_codes())}",
+            file=sys.stderr,
+        )
         return 2
 
     try:
@@ -79,8 +104,12 @@ def run(argv: list[str] | None = None) -> int:
             source_dir=source_dir,
             out_dir=out_dir,
             day_boundary_hour=args.day_boundary_hour,
+            output_language=language_code,
         )
     except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except LLMError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -91,9 +120,15 @@ def run(argv: list[str] | None = None) -> int:
         print(result.markdown, end="" if result.markdown.endswith("\n") else "\n")
         return 0
 
+    for legacy_path in legacy_output_paths(out_dir, target_date.isoformat()):
+        if legacy_path.exists():
+            legacy_path.unlink()
     result.output_path.parent.mkdir(parents=True, exist_ok=True)
     result.output_path.write_text(result.markdown, encoding="utf-8")
-    print(f"작업 일기를 생성했습니다: {result.output_path}")
+    print(
+        f"작업 일기를 생성했습니다: {result.output_path} "
+        f"({get_language_option(language_code).label})"
+    )
     return 0
 
 

@@ -1,28 +1,55 @@
+[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
+
 # codex-diary
 
-Chronicle이 이미 생성한 Markdown 메모리 요약을 읽어서, 한국어 기준의 "금일 작업 보고서 + 일기 버전"을 함께 만드는 로컬 도구입니다. 원본 화면 녹화, JPG, OCR JSONL은 직접 읽지 않고 `~/.codex/memories_extensions/chronicle/resources/*.md` 같은 Chronicle 요약 Markdown만 입력으로 사용합니다.
+Generate a daily work report plus diary draft from Chronicle Markdown summaries.
 
-기본 엔진은 CLI로도 쓸 수 있고, 지금은 같은 코어를 재사용하는 Tkinter 기반 데스크톱 앱도 함께 제공합니다.
+`codex-diary` is a local tool that reads Chronicle summary files such as `~/.codex/memories_extensions/chronicle/resources/*.md` and turns them into a dated Markdown diary. It does not read raw screen recordings, JPG screenshots, or OCR JSONL directly. The intended input is Chronicle's already-generated summary Markdown.
 
-하루 경계는 로컬 타임존 기준 오전 4시가 기본값입니다. 그래서 `00:00~03:59`의 활동은 전날 일기에 포함되도록 처리합니다. Chronicle 파일명은 현재 포맷 기준 UTC 타임스탬프로 해석한 뒤, 로컬 타임존으로 변환해서 날짜를 묶습니다.
+The generator currently depends on a local `codex` CLI login session. If Codex is not available or not logged in, the tool stops with a connection message instead of silently falling back to a different provider.
 
-## 주요 기능
+English is the source-of-truth README. Localized READMEs may lag slightly when the project changes.
 
-- `10min` 요약을 기본 입력으로 사용
-- `6h` 요약은 `10min` 정보가 부족할 때만 보조/fallback으로 사용
-- `draft-update`와 `finalize` 모드 지원
-- 핵심 요약뿐 아니라 사소한 앱 전환/문서 열람/확인 흐름도 시간순 메모로 함께 기록
-- 같은 결과물 안에 `금일 작업 보고서`와 `오늘의 일기 버전`을 함께 생성
-- 데스크톱 앱에서 날짜 선택, 생성, 미리보기, 복사, 파일 열기 지원
-- 데스크톱 앱에서 생성 결과를 외부 IDE가 아니라 앱 안에서 바로 읽기 지원
-- 선택 날짜의 저장된 일기 다시 보기와 주간 묶음 보기 지원
-- 이메일, 전화번호, 토큰, 긴 인증값 같은 민감정보 마스킹
-- LLM API 키가 없어도 규칙 기반 fallback으로 Markdown 생성
-- 나중에 cron, launchd, Codex automation으로 연결하기 쉽도록 함수 분리
+## Why this tool exists
 
-## 설치와 실행
+Chronicle already compresses activity into summary Markdown. This project keeps the diary workflow lightweight and privacy-safer by building on those summaries instead of reprocessing raw captures.
 
-별도 의존성 없이 Python 3.9+ 기준으로 동작합니다.
+The current diary policy is:
+
+- Use `10min` Chronicle summaries as the primary source.
+- Use `6h` summaries only as secondary context when needed.
+- Group entries by the local timezone with a default `04:00` day boundary.
+- Keep one dated output file per day and overwrite it when regenerating.
+
+## Features
+
+- Generates both a `Work Report` section and a `Diary Version` section in one Markdown file
+- Supports `draft-update` and `finalize` modes
+- Uses Chronicle summary Markdown files only
+- Supports optional redaction before generation
+- Supports CLI and a desktop app built with `pywebview`
+- Supports multilingual diary output
+- Can package the desktop app into a macOS `.dmg`
+
+## Documentation languages
+
+GitHub does not provide automatic README language switching. The usual approach is:
+
+- Keep one primary `README.md`
+- Add translated files like `README.ko.md` and `README.ja.md`
+- Link them at the top of each README
+
+That structure is set up in this repository now, so adding another language later is straightforward.
+
+## Requirements
+
+- Python `3.9+`
+- Local `codex` CLI installed
+- A valid Codex login session through `codex login`
+
+The app checks login status internally with `codex login status`. In the desktop app, the connect flow can open `codex login --device-auth` in Terminal on macOS.
+
+## Installation
 
 ```bash
 python3 -m venv .venv
@@ -30,131 +57,147 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-또는 설치 없이도 바로 실행할 수 있습니다.
+If you also want macOS packaging support:
 
 ```bash
-python3 -m codex_diary.cli finalize --date 2026-04-21 --dry-run
+pip install -e ".[macos-build]"
 ```
 
-데스크톱 앱을 실행하려면:
+## CLI quick start
+
+Default output path:
+
+- Development mode: `./output/diary/YYYY-MM-DD.md`
+- Frozen macOS app: `~/Library/Application Support/Codex Diary/output/diary/YYYY-MM-DD.md`
+
+Examples:
+
+```bash
+codex-diary finalize --date 2026-04-21
+codex-diary draft-update --date 2026-04-21
+codex-diary finalize --date 2026-04-21 --dry-run
+codex-diary finalize --date 2026-04-21 --output-language ko
+codex-diary finalize --source-dir ~/.codex/memories_extensions/chronicle/resources
+codex-diary finalize --out-dir ./custom-output --day-boundary-hour 4
+```
+
+Main options:
+
+- `draft-update` / `finalize`: choose draft accumulation or final diary generation
+- `--date YYYY-MM-DD`: generate for a specific day
+- `--source-dir <path>`: override the Chronicle summary directory
+- `--out-dir <path>`: choose the output directory
+- `--dry-run`: print to stdout without writing a file
+- `--day-boundary-hour <0-23>`: set the local day boundary, default `4`
+- `--language <code>` or `--output-language <code>`: choose the output language, default `en`
+
+If Codex is not connected, the command exits with:
+
+```text
+먼저 codex를 연결해주세요.
+```
+
+## Desktop app
+
+Run directly:
 
 ```bash
 python3 -m codex_diary.app
 ```
 
-설치 후에는 아래처럼 쓸 수 있습니다.
+Or use the installed entry point:
 
 ```bash
 codex-diary-app
 ```
 
-앱에서는 날짜, 입력 폴더, 출력 폴더, 하루 경계 시각, 생성 모드를 고른 뒤 결과를 `전체 Markdown / 금일 작업 보고서 / 오늘의 일기` 탭으로 미리 볼 수 있습니다.
+The app supports:
 
-배포된 macOS 앱의 기본 출력 경로는 저장 가능한 위치인 `~/Library/Application Support/Codex Diary/output/diary`입니다. 필요하면 앱 안에서 다른 폴더로 바꿀 수 있습니다.
+- Selecting a target date
+- Choosing Chronicle input and output folders
+- Choosing the output language
+- Switching between `draft-update` and `finalize`
+- Viewing report, diary, and raw Markdown inside the app
+- Browsing recent dates and weekly archives
+- Copying the current view
+- Opening the result in an external app
 
-## macOS DMG 빌드
+The app also shows Codex connection status and disables generation until the login flow is complete.
 
-macOS에서 배포용 `.app` / `.dmg`를 만들려면 PyInstaller 빌드 도구만 추가로 설치하면 됩니다.
+## macOS packaging
+
+Build the app bundle and DMG with:
 
 ```bash
-pip install -e ".[macos-build]"
 codex-diary-package-macos
 ```
 
-설치 없이 바로 실행하고 싶다면 아래처럼도 가능합니다.
+Or:
 
 ```bash
 python3 -m codex_diary.package_macos
 ```
 
-기본 산출물:
+Default artifacts:
 
-- 앱 번들: `dist/Codex Diary.app`
-- DMG: `dist/Codex-Diary-0.1.0-macOS.dmg`
+- `dist/Codex Diary.app`
+- `dist/Codex-Diary-0.1.0-macOS.dmg`
 
-추가 옵션:
+## Supported diary output languages
 
-- `--skip-dmg`: `.app`만 만들고 DMG는 건너뜀
-- `--dist-dir <path>`: 최종 산출물 위치 변경
-- `--build-dir <path>`: PyInstaller 작업 파일 위치 변경
+The generated diary content currently supports:
 
-참고:
+- `en` English
+- `ko` Korean
+- `ja` Japanese
+- `zh` Chinese
+- `fr` French
+- `de` German
+- `es` Spanish
+- `vi` Vietnamese
+- `th` Thai
+- `ru` Russian
+- `hi` Hindi
 
-- 현재 빌드는 코드 서명이나 notarization이 없는 로컬 배포용입니다.
-- GitHub Releases 같은 곳에 `dist/Codex-Diary-0.1.0-macOS.dmg`를 올리면 사용자가 내려받아 설치할 수 있습니다.
-- 다만 브라우저로 내려받은 DMG/App은 macOS Gatekeeper가 막을 수 있습니다. 이 경우 첫 실행은 Finder에서 우클릭 `열기`를 쓰거나, 로컬 테스트 용도라면 `xattr -dr com.apple.quarantine "/Applications/Codex Diary.app"` 같은 방식으로 quarantine 속성을 제거해야 할 수 있습니다.
+These output languages are separate from the README translation files. The app and CLI can generate diaries in more languages than the repository currently translates for documentation.
 
-## CLI 사용법
+## Output structure
 
-기본 출력 경로:
+Each generated Markdown file contains both of these blocks:
 
-- 초안 갱신: `output/diary/drafts/YYYY-MM-DD.md`
-- 최종 일기: `output/diary/YYYY-MM-DD.md`
+- `Work Report`
+- `Diary Version`
 
-예시:
+Typical sections include:
 
-```bash
-codex-diary draft-update --date 2026-04-21
-codex-diary finalize --date 2026-04-21
-codex-diary finalize --date 2026-04-21 --dry-run
-codex-diary finalize --source-dir ~/.codex/memories_extensions/chronicle/resources
-codex-diary finalize --out-dir ./custom-output --day-boundary-hour 4
-```
+- What I did today
+- Timeline notes, including small steps
+- Key decisions and confirmations
+- Blockers or open issues
+- Tasks for tomorrow
+- A short reflection
 
-지원 옵션:
+The diary version is phrased more naturally than the report section, but it is still designed to stay grounded in observed work rather than inventing off-screen emotions or activities.
 
-- `draft-update` / `finalize`: 생성 모드. 기본값은 `finalize`
-- `--date YYYY-MM-DD`: 특정 날짜 기준으로 생성
-- `--source-dir <path>`: Chronicle 요약 폴더 override
-- `--out-dir <path>`: 결과 저장 폴더
-- `--dry-run`: 파일 저장 없이 stdout 출력
-- `--day-boundary-hour 4`: 하루 경계 시각 지정
+## Environment variables
 
-## 데스크톱 앱 사용법
+No environment variables are required.
 
-- 실행: `python3 -m codex_diary.app` 또는 `codex-diary-app`
-- 입력: 날짜, Chronicle 요약 폴더, 출력 폴더, 하루 경계 시각
-- 모드: `최종 일기` / `초안 갱신`
-- 결과: `전체 Markdown`, `금일 작업 보고서`, `오늘의 일기` 보기 전환
-- 편의 기능: 생성 후 자동 저장, 현재 보기 복사, 앱 안에서 결과 보기, 외부 앱 열기, 선택 날짜 보기, 해당 주 보기
+- This project does not ask for API keys.
+- Generation relies on the local Codex login session instead.
 
-## 환경변수
-
-LLM은 선택 사항입니다. API 키가 없으면 규칙 기반 fallback으로 자동 동작합니다.
-
-- `OPENAI_API_KEY`: 있으면 OpenAI Responses API를 사용
-- `OPENAI_MODEL`: 기본값 `gpt-4.1-mini`
-- `OPENAI_BASE_URL`: 기본값 `https://api.openai.com/v1`
-- `DIARY_LLM_PROVIDER`: 현재는 `openai`만 지원
-
-## 테스트
+## Testing
 
 ```bash
 python3 -m unittest discover -s tests -v
+node --check codex_diary/ui/app.js
+python3 -m compileall codex_diary
 ```
 
-## 생성 결과 형식
+## Limitations
 
-도구는 한 문서 안에 아래 두 가지 결과를 함께 만듭니다.
-
-- `금일 작업 보고서`
-- `오늘의 일기 버전`
-
-보고서 쪽에는 아래 항목이 들어갑니다.
-
-- 오늘 한 일
-- 사소한 흐름까지 포함한 시간순 메모
-- 중요하게 확인하거나 결정한 것
-- 막혔던 점 또는 미해결 이슈
-- 내일 할 일
-- 짧은 회고
-
-일기 버전은 같은 사실을 조금 더 부드럽고 살짝 귀엽게 풀어 쓰되, 화면에 실제로 드러난 맥락을 넘어서 감정이나 오프라인 활동을 과장하지 않도록 설계했습니다.
-
-## 한계점
-
-- Chronicle 요약 자체가 이미 2차 요약물이므로, 원문보다 세부 맥락이 줄어든 상태에서 일기를 만듭니다.
-- LLM 없이 동작하는 fallback은 사실을 보수적으로 유지하는 대신 문체가 다소 단정적으로 느껴질 수 있습니다.
-- 현재는 Chronicle 파일명을 UTC 기준으로 가정합니다. 이 포맷이 달라지면 파일명 파서를 함께 조정해야 합니다.
-- 민감정보 마스킹은 일반적인 패턴 중심이라 모든 비밀값을 완벽히 식별하지는 못할 수 있습니다.
-- macOS DMG는 현재 unsigned 상태라, 외부 배포 시에는 코드 서명과 notarization을 추가하는 편이 좋습니다.
+- Chronicle summaries are already second-order summaries, so some detail is inevitably lost.
+- Generation does not work without a locally installed and logged-in `codex` CLI.
+- The current source parser assumes Chronicle summary filenames use the expected UTC timestamp format.
+- Redaction is pattern-based and should not be treated as perfect secret detection.
+- The macOS DMG flow is currently intended for unsigned local distribution.

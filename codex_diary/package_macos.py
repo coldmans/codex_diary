@@ -10,6 +10,18 @@ from pathlib import Path
 from . import __version__
 
 APP_NAME = "Codex Diary"
+ICONSET_SPECS = (
+    ("icon_16x16.png", 16),
+    ("icon_16x16@2x.png", 32),
+    ("icon_32x32.png", 32),
+    ("icon_32x32@2x.png", 64),
+    ("icon_128x128.png", 128),
+    ("icon_128x128@2x.png", 256),
+    ("icon_256x256.png", 256),
+    ("icon_256x256@2x.png", 512),
+    ("icon_512x512.png", 512),
+    ("icon_512x512@2x.png", 1024),
+)
 
 
 def repository_root() -> Path:
@@ -31,12 +43,20 @@ def default_build_dir() -> Path:
     return repository_root() / "build" / "macos"
 
 
+def default_app_icon_source() -> Path:
+    return repository_root() / "codex_diary" / "ui" / "assets" / "app-icon.png"
+
+
 def default_dmg_name(app_name: str, version: str) -> str:
     return f"{sanitize_artifact_name(app_name)}-{version}-macOS.dmg"
 
 
 def app_bundle_path(dist_dir: Path, app_name: str) -> Path:
     return dist_dir / f"{app_name}.app"
+
+
+def auxiliary_dist_path(dist_dir: Path, app_name: str) -> Path:
+    return dist_dir / app_name
 
 
 def ensure_macos() -> None:
@@ -53,6 +73,41 @@ def ensure_pyinstaller_installed() -> None:
 
 def run_command(args: list[str], *, cwd: Path | None = None) -> None:
     subprocess.run(args, cwd=str(cwd) if cwd else None, check=True)
+
+
+def build_app_icon(*, source_png: Path, build_dir: Path, app_name: str) -> Path:
+    if not source_png.exists():
+        raise RuntimeError(f"앱 아이콘 소스 PNG를 찾지 못했습니다: {source_png}")
+
+    icon_root = build_dir / "icon"
+    iconset_dir = icon_root / f"{sanitize_artifact_name(app_name)}.iconset"
+    icns_path = icon_root / f"{sanitize_artifact_name(app_name)}.icns"
+
+    if iconset_dir.exists():
+        shutil.rmtree(iconset_dir)
+    icon_root.mkdir(parents=True, exist_ok=True)
+    iconset_dir.mkdir(parents=True, exist_ok=True)
+
+    for filename, size in ICONSET_SPECS:
+        run_command(
+            [
+                "sips",
+                "-z",
+                str(size),
+                str(size),
+                str(source_png),
+                "--out",
+                str(iconset_dir / filename),
+            ]
+        )
+
+    if icns_path.exists():
+        icns_path.unlink()
+    run_command(["iconutil", "-c", "icns", str(iconset_dir), "-o", str(icns_path)])
+
+    if not icns_path.exists():
+        raise RuntimeError(f"macOS 앱 아이콘 생성이 끝났지만 .icns 파일을 찾지 못했습니다: {icns_path}")
+    return icns_path
 
 
 def build_pyinstaller_app(
@@ -72,6 +127,12 @@ def build_pyinstaller_app(
     pyinstaller_work.mkdir(parents=True, exist_ok=True)
     dist_dir.mkdir(parents=True, exist_ok=True)
 
+    ui_dir = root / "codex_diary" / "ui"
+    app_icon = build_app_icon(
+        source_png=default_app_icon_source(),
+        build_dir=build_dir,
+        app_name=app_name,
+    )
     command = [
         sys.executable,
         "-m",
@@ -89,6 +150,14 @@ def build_pyinstaller_app(
         str(spec_path),
         "--paths",
         str(root),
+        "--icon",
+        str(app_icon),
+        "--collect-submodules",
+        "webview",
+        "--collect-data",
+        "webview",
+        "--add-data",
+        f"{ui_dir}:codex_diary/ui",
         str(launcher),
     ]
     run_command(command, cwd=root)
@@ -141,6 +210,20 @@ def create_dmg(
     return output_path
 
 
+def cleanup_packaging_artifacts(*, dist_dir: Path, build_dir: Path, app_name: str) -> None:
+    helper_dist = auxiliary_dist_path(dist_dir, app_name)
+    if helper_dist.exists() and helper_dist.is_dir():
+        shutil.rmtree(helper_dist)
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    build_root = build_dir.parent
+    if build_root.exists() and build_root.is_dir() and not any(build_root.iterdir()):
+        build_root.rmdir()
+    ds_store = dist_dir / ".DS_Store"
+    if ds_store.exists():
+        ds_store.unlink()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codex-diary-package-macos",
@@ -188,6 +271,7 @@ def run(argv: list[str] | None = None) -> int:
     print(f"앱 번들을 생성했습니다: {bundle}")
 
     if args.skip_dmg:
+        cleanup_packaging_artifacts(dist_dir=dist_dir, build_dir=build_dir, app_name=app_name)
         return 0
 
     dmg_root = build_dir / "dmg-root"
@@ -199,6 +283,7 @@ def run(argv: list[str] | None = None) -> int:
         volume_name=app_name,
     )
     print(f"DMG를 생성했습니다: {dmg_path}")
+    cleanup_packaging_artifacts(dist_dir=dist_dir, build_dir=build_dir, app_name=app_name)
     return 0
 
 

@@ -1,101 +1,218 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
-import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 from typing import Optional
-from urllib import error, request
+
+
+CODEX_NOT_CONNECTED_MESSAGE = "먼저 codex를 연결해주세요."
+CODEX_MISSING_MESSAGE = "먼저 codex를 연결해주세요. Codex CLI를 찾지 못했습니다."
+CODEX_LOGIN_LAUNCHED_MESSAGE = "Codex 로그인 창을 열었어요. 연결이 끝나면 다시 생성해 주세요."
+CODEX_EXEC_TIMEOUT_SECONDS = 240
+COMMON_CODEX_PATHS = (
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    "/usr/bin/codex",
+    "~/.local/bin/codex",
+)
 
 
 class LLMError(RuntimeError):
     """Raised when an LLM request fails."""
 
 
-@dataclass
-class LLMConfig:
-    provider: Optional[str]
-    model: str
-    base_url: str
-    api_key: Optional[str]
+class CodexConnectionError(LLMError):
+    """Raised when Codex CLI is not available or not logged in."""
+
+
+@dataclass(frozen=True)
+class CodexStatus:
+    available: bool
+    connected: bool
+    auth_mode: Optional[str]
+    message: str
+    command: Optional[str]
+    raw_output: str = ""
+
+    def to_json(self) -> dict[str, Optional[str] | bool]:
+        return {
+            "available": self.available,
+            "connected": self.connected,
+            "auth_mode": self.auth_mode,
+            "message": self.message,
+            "command": self.command,
+            "raw_output": self.raw_output,
+        }
 
 
 class LLMProvider:
-    def generate_markdown(self, prompt: str) -> str:
+    def generate_markdown(self, prompt: str, *, output_language: str | None = None) -> str:
         raise NotImplementedError
 
 
-class OpenAIResponsesProvider(LLMProvider):
-    def __init__(self, *, model: str, base_url: str, api_key: str) -> None:
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+def find_codex_command() -> Optional[str]:
+    discovered = shutil.which("codex")
+    if discovered:
+        return discovered
+    for candidate in COMMON_CODEX_PATHS:
+        path = Path(candidate).expanduser()
+        if path.exists() and path.is_file():
+            return str(path)
+    return None
 
-    def generate_markdown(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                "You generate Korean work diary drafts from Chronicle summaries. "
-                                "Do not invent facts, projects, actions, or emotions. "
-                                "If emotion is not explicit, stay restrained and describe focus, comparison, or review only. "
-                                "Never quote secrets, tokens, phone numbers, or emails. "
-                                "Return Markdown only."
-                            ),
-                        }
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}],
-                },
-            ],
-        }
-        encoded = json.dumps(payload).encode("utf-8")
-        req = request.Request(
-            url=f"{self.base_url}/responses",
-            data=encoded,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
+
+def get_codex_status() -> CodexStatus:
+    command = find_codex_command()
+    if not command:
+        return CodexStatus(
+            available=False,
+            connected=False,
+            auth_mode=None,
+            message=CODEX_MISSING_MESSAGE,
+            command=None,
         )
 
-        try:
-            with request.urlopen(req, timeout=30) as response:
-                raw = json.loads(response.read().decode("utf-8"))
-        except error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise LLMError(f"OpenAI 응답 호출이 실패했습니다: HTTP {exc.code} - {body}") from exc
-        except error.URLError as exc:
-            raise LLMError(f"OpenAI 응답 호출이 실패했습니다: {exc.reason}") from exc
+    try:
+        proc = subprocess.run(
+            [command, "login", "status"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except OSError as exc:
+        return CodexStatus(
+            available=False,
+            connected=False,
+            auth_mode=None,
+            message=f"{CODEX_MISSING_MESSAGE} ({exc})",
+            command=command,
+        )
+    except subprocess.TimeoutExpired:
+        return CodexStatus(
+            available=True,
+            connected=False,
+            auth_mode=None,
+            message="Codex 연결 상태를 확인하는 중 시간이 너무 오래 걸렸어요. 잠시 후 다시 시도해 주세요.",
+            command=command,
+        )
 
-        if isinstance(raw.get("output_text"), str) and raw["output_text"].strip():
-            return raw["output_text"].strip()
+    raw_output = "\n".join(part for part in (proc.stdout.strip(), proc.stderr.strip()) if part).strip()
+    normalized = raw_output.lower()
+    if "logged in using" in normalized:
+        auth_mode = "chatgpt" if "chatgpt" in normalized else "api-key" if "api key" in normalized else "unknown"
+        return CodexStatus(
+            available=True,
+            connected=True,
+            auth_mode=auth_mode,
+            message="Codex가 연결되어 있어요.",
+            command=command,
+            raw_output=raw_output,
+        )
+    if "not logged in" in normalized or "login required" in normalized:
+        return CodexStatus(
+            available=True,
+            connected=False,
+            auth_mode=None,
+            message=CODEX_NOT_CONNECTED_MESSAGE,
+            command=command,
+            raw_output=raw_output,
+        )
+    if proc.returncode != 0:
+        return CodexStatus(
+            available=True,
+            connected=False,
+            auth_mode=None,
+            message=CODEX_NOT_CONNECTED_MESSAGE,
+            command=command,
+            raw_output=raw_output,
+        )
+    return CodexStatus(
+        available=True,
+        connected=False,
+        auth_mode=None,
+        message=CODEX_NOT_CONNECTED_MESSAGE,
+        command=command,
+        raw_output=raw_output,
+    )
 
-        fragments = []
-        for item in raw.get("output", []):
-            for content in item.get("content", []):
-                if content.get("type") == "output_text" and content.get("text"):
-                    fragments.append(content["text"])
-        text = "\n".join(fragment.strip() for fragment in fragments if fragment.strip())
-        if not text:
-            raise LLMError("LLM 응답에서 본문 텍스트를 찾지 못했습니다.")
-        return text
+
+def ensure_codex_connected() -> CodexStatus:
+    status = get_codex_status()
+    if not status.connected:
+        raise CodexConnectionError(status.message or CODEX_NOT_CONNECTED_MESSAGE)
+    return status
 
 
-def load_provider_from_env() -> Optional[LLMProvider]:
-    provider = os.getenv("DIARY_LLM_PROVIDER", "openai").strip().lower()
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return None
-    if provider != "openai":
-        return None
-    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    return OpenAIResponsesProvider(model=model, base_url=base_url, api_key=api_key)
+def codex_login_command_args(*, device_auth: bool = True) -> list[str]:
+    command = find_codex_command()
+    if not command:
+        raise CodexConnectionError(CODEX_MISSING_MESSAGE)
+    args = [command, "login"]
+    if device_auth:
+        args.append("--device-auth")
+    return args
+
+
+class CodexCliProvider(LLMProvider):
+    def __init__(self, *, command: str, timeout_seconds: int = CODEX_EXEC_TIMEOUT_SECONDS) -> None:
+        self.command = command
+        self.timeout_seconds = timeout_seconds
+
+    def generate_markdown(self, prompt: str, *, output_language: str | None = None) -> str:
+        with tempfile.TemporaryDirectory(prefix="codex-diary-codex-") as tmpdir:
+            tmp_path = Path(tmpdir)
+            output_path = tmp_path / "final.md"
+            cmd = [
+                self.command,
+                "exec",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
+                "-C",
+                str(tmp_path),
+                "-o",
+                str(output_path),
+                "-",
+            ]
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    text=True,
+                    capture_output=True,
+                    timeout=self.timeout_seconds,
+                    check=False,
+                )
+            except FileNotFoundError as exc:
+                raise CodexConnectionError(CODEX_MISSING_MESSAGE) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise LLMError("Codex 응답이 너무 오래 걸리고 있어요. 잠시 후 다시 시도해 주세요.") from exc
+
+            if proc.returncode != 0:
+                combined = "\n".join(part for part in (proc.stderr.strip(), proc.stdout.strip()) if part).strip()
+                normalized = combined.lower()
+                if "not logged in" in normalized or "login required" in normalized or "invalid refresh token" in normalized:
+                    raise CodexConnectionError(CODEX_NOT_CONNECTED_MESSAGE)
+                detail = combined.splitlines()[0] if combined else "알 수 없는 오류"
+                raise LLMError(f"Codex 호출이 실패했습니다: {detail}")
+
+            if not output_path.exists():
+                raise LLMError("Codex 응답 파일을 찾지 못했습니다.")
+            markdown = output_path.read_text(encoding="utf-8").strip()
+            if not markdown:
+                raise LLMError("Codex가 비어 있는 응답을 돌려줬어요.")
+            return markdown
+
+
+CodexCLIProvider = CodexCliProvider
+
+
+def load_provider_from_codex() -> LLMProvider:
+    status = ensure_codex_connected()
+    if not status.command:
+        raise CodexConnectionError(CODEX_MISSING_MESSAGE)
+    return CodexCliProvider(command=status.command)
