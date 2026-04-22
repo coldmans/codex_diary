@@ -29,6 +29,7 @@
   const MEMO_KEY = "codex-diary:memos:v1";
   const MOOD_KEY = "codex-diary:moods:v1";
   const OUTPUT_LANGUAGE_KEY = "codex-diary:output-language:v1";
+  const DIARY_LENGTH_KEY = "codex-diary:diary-length:v1";
   const RUNTIME_STYLE_ID = "codex-diary-runtime-style";
   const OUTPUT_LANGUAGES = [
     { key: "en", label: "English", nativeLabel: "English", locale: "en-US" },
@@ -44,6 +45,12 @@
     { key: "hi", label: "Hindi", nativeLabel: "हिन्दी", locale: "hi-IN" },
   ];
   const UI_COPY = window.CODEX_DIARY_UI_COPY || { en: {} };
+  const DIARY_LENGTH_OPTIONS = [
+    { key: "short" },
+    { key: "medium" },
+    { key: "long" },
+    { key: "very-long" },
+  ];
   const ENTRY_TONES = [
     { accent: "#cf6f57", surface: "#fff0ea", border: "#f0c6bb" },
     { accent: "#ad8452", surface: "#fbf2e4", border: "#e8d3b1" },
@@ -70,6 +77,7 @@
       mode: "finalize",
       autoSave: true,
       outputLanguage: DEFAULT_OUTPUT_LANGUAGE,
+      diaryLength: "short",
     },
     nav: "diary",
     view: "diary",
@@ -97,6 +105,7 @@
     settingsOpen: false,
     menuOpen: false,
     languagePinned: false,
+    diaryLengthPinned: false,
   };
 
   function currentUiOption(value = state.config.outputLanguage) {
@@ -156,6 +165,7 @@
     state.generationProgress = normalizeProgress(progress);
     if (state.busy && state.busyKind === "generate") {
       updateLoadingView();
+      syncGenerateButton();
     }
   }
 
@@ -520,9 +530,18 @@
     return `${formatShortMonthDay(iso)} ${modeLabel}`;
   }
 
+  function isCancellingGeneration() {
+    return state.busyKind === "generate" && state.generationProgress?.status === "cancelling";
+  }
+
   function refreshGenerateLabel() {
     const label = document.querySelector(".cta__label");
-    if (!label || state.busy) return;
+    if (!label) return;
+    if (state.busyKind === "generate") {
+      label.textContent = isCancellingGeneration() ? t("generate.cancelling") : t("generate.cancel");
+      return;
+    }
+    if (state.busy) return;
     if (state.codex.loaded && !state.codex.connected) {
       label.textContent = t("generate.connect");
       return;
@@ -534,8 +553,14 @@
     const btn = document.querySelector(".cta");
     if (!btn) return;
     const unavailable = state.codex.loaded && !state.codex.connected;
-    btn.disabled = state.busy || unavailable;
-    btn.title = unavailable ? t("generate.connectTitle") : "";
+    const generating = state.busyKind === "generate";
+    btn.disabled = generating ? isCancellingGeneration() : state.busy || unavailable;
+    btn.classList.toggle("is-cancel", generating);
+    btn.title = generating
+      ? t("generate.cancelTitle")
+      : unavailable
+        ? t("generate.connectTitle")
+        : "";
     refreshGenerateLabel();
   }
 
@@ -742,13 +767,43 @@
       ]),
       el("span", { class: "setting__hint" }, t("settings.languageHint")),
     ]);
-    if (autoSaveSetting) panel.insertBefore(languageSetting, autoSaveSetting);
+    if (autoSaveSetting && autoSaveSetting.parentElement) {
+      autoSaveSetting.parentElement.insertBefore(languageSetting, autoSaveSetting);
+    }
     else panel.appendChild(languageSetting);
+  }
+
+  function ensureDiaryLengthSetting() {
+    const panel = $("#settings-panel");
+    if (!panel || $("#diary-length")) return;
+    const modeSetting = document.querySelector('input[name="mode"][value="finalize"]')?.closest(".setting");
+    const lengthSetting = el("label", { class: "setting", dataset: { setting: "diary-length" } }, [
+      el("span", {}, t("settings.lengthLabel")),
+      el("div", { class: "setting__row setting__row--stack" }, [
+        el(
+          "select",
+          {
+            id: "diary-length",
+            class: "language-select",
+            "aria-label": t("settings.lengthLabel"),
+          },
+          DIARY_LENGTH_OPTIONS.map((option) =>
+            el("option", { value: option.key }, t(`length.${option.key}`)),
+          ),
+        ),
+      ]),
+      el("span", { class: "setting__hint" }, t("settings.lengthHint")),
+    ]);
+    if (modeSetting && modeSetting.parentElement) {
+      modeSetting.parentElement.insertBefore(lengthSetting, modeSetting);
+    }
+    else panel.appendChild(lengthSetting);
   }
 
   function installRuntimeUi() {
     injectRuntimeStyles();
     ensureLanguageSetting();
+    ensureDiaryLengthSetting();
   }
 
   function applyStaticUiCopy() {
@@ -821,6 +876,20 @@
       const hint = boundarySetting.querySelector(".setting__hint");
       if (label) label.textContent = t("settings.boundaryLabel");
       if (hint) hint.textContent = t("settings.boundaryHint");
+    }
+
+    const lengthSetting = $("#diary-length")?.closest(".setting");
+    if (lengthSetting) {
+      const label = lengthSetting.querySelector("span");
+      const hint = lengthSetting.querySelector(".setting__hint");
+      if (label) label.textContent = t("settings.lengthLabel");
+      if (hint) hint.textContent = t("settings.lengthHint");
+      const select = lengthSetting.querySelector("select");
+      if (select) {
+        Array.from(select.options).forEach((optionEl) => {
+          optionEl.textContent = t(`length.${optionEl.value}`);
+        });
+      }
     }
 
     const modeSetting = document.querySelector('input[name="mode"][value="finalize"]')?.closest(".setting");
@@ -901,9 +970,34 @@
     return aliasMap[raw] || null;
   }
 
+  function normalizeDiaryLengthKey(value) {
+    if (value === null || value === undefined) return null;
+    const raw = String(value).trim().toLowerCase();
+    if (!raw) return null;
+    const aliasMap = {
+      brief: "short",
+      compact: "short",
+      normal: "medium",
+      "very long": "very-long",
+      very_long: "very-long",
+      verylong: "very-long",
+      "짧게": "short",
+      "중간": "medium",
+      "길게": "long",
+      "매우 길게": "very-long",
+    };
+    const normalized = aliasMap[raw] || raw;
+    return DIARY_LENGTH_OPTIONS.find((option) => option.key === normalized)?.key || null;
+  }
+
   function getOutputLanguageOption(value = state.config.outputLanguage) {
     const key = normalizeLanguageKey(value) || DEFAULT_OUTPUT_LANGUAGE;
     return OUTPUT_LANGUAGES.find((option) => option.key === key) || OUTPUT_LANGUAGES[0];
+  }
+
+  function getDiaryLengthOption(value = state.config.diaryLength) {
+    const key = normalizeDiaryLengthKey(value) || DIARY_LENGTH_OPTIONS[0].key;
+    return DIARY_LENGTH_OPTIONS.find((option) => option.key === key) || DIARY_LENGTH_OPTIONS[0];
   }
 
   function setOutputLanguage(value, { persist = true } = {}) {
@@ -919,10 +1013,23 @@
     renderStage();
   }
 
+  function setDiaryLength(value, { persist = true } = {}) {
+    const option = getDiaryLengthOption(value);
+    state.config.diaryLength = option.key;
+    if (persist) {
+      writeTextStorage(DIARY_LENGTH_KEY, option.key);
+      state.diaryLengthPinned = true;
+    }
+    renderConfig();
+  }
+
   function hydrateClientPreferences() {
     const storedLanguage = normalizeLanguageKey(readTextStorage(OUTPUT_LANGUAGE_KEY));
+    const storedLength = normalizeDiaryLengthKey(readTextStorage(DIARY_LENGTH_KEY));
     state.languagePinned = Boolean(storedLanguage);
+    state.diaryLengthPinned = Boolean(storedLength);
     state.config.outputLanguage = storedLanguage || DEFAULT_OUTPUT_LANGUAGE;
+    state.config.diaryLength = storedLength || DIARY_LENGTH_OPTIONS[0].key;
   }
 
   function currentLanguagePayload() {
@@ -1937,6 +2044,13 @@
       });
       languageSelect.value = getOutputLanguageOption().key;
     }
+    const lengthSelect = $("#diary-length");
+    if (lengthSelect) {
+      Array.from(lengthSelect.options).forEach((optionEl) => {
+        optionEl.textContent = t(`length.${optionEl.value}`);
+      });
+      lengthSelect.value = getDiaryLengthOption().key;
+    }
     const viewSegmented = $("#view-segmented");
     if (viewSegmented) {
       const hiddenOutsideDiary = state.nav !== "diary";
@@ -1971,6 +2085,11 @@
       normalizeLanguageKey(config.language) ||
       normalizeLanguageKey(config.locale);
     if (language && !state.languagePinned) state.config.outputLanguage = language;
+    const diaryLength =
+      normalizeDiaryLengthKey(config.diary_length_code) ||
+      normalizeDiaryLengthKey(config.diary_length) ||
+      normalizeDiaryLengthKey(config.length);
+    if (diaryLength && !state.diaryLengthPinned) state.config.diaryLength = diaryLength;
     renderConfig();
   }
 
@@ -2111,13 +2230,21 @@
     state.busyKind = busy ? kind || state.busyKind : null;
     const btn = document.querySelector(".cta");
     if (btn) {
-      btn.disabled = busy || (state.codex.loaded && !state.codex.connected);
+      const generating = state.busyKind === "generate";
+      btn.disabled = generating
+        ? isCancellingGeneration()
+        : busy || (state.codex.loaded && !state.codex.connected);
+      btn.classList.toggle("is-cancel", generating);
       const spinner = btn.querySelector(".spinner");
       const label = btn.querySelector(".cta__label");
-      if (spinner) spinner.hidden = !busy;
+      if (spinner) spinner.hidden = !(busy && state.busyKind === "generate");
       if (label) {
-        label.textContent = busy
-          ? t("generate.busy")
+        label.textContent = generating
+          ? isCancellingGeneration()
+            ? t("generate.cancelling")
+            : t("generate.cancel")
+          : busy
+            ? t("generate.busy")
           : state.codex.loaded && !state.codex.connected
             ? t("generate.connect")
             : computeGenerateLabel();
@@ -2157,10 +2284,27 @@
     return Promise.race([promise, timer]).finally(() => clearTimeout(timeoutId));
   }
 
+  async function cancelGeneration() {
+    const bridge = api();
+    if (!bridge || state.busyKind !== "generate" || isCancellingGeneration()) return;
+    try {
+      const payload = await bridge.cancel_generation();
+      if (payload?.progress) syncGenerationProgress(payload.progress);
+      setFooter(t("footer.cancelling"));
+      setWarning("");
+    } catch (err) {
+      setWarning(String(err && err.message ? err.message : err));
+    }
+  }
+
   async function generate() {
     const bridge = api();
     if (!bridge) {
       setWarning(t("warning.webview"));
+      return;
+    }
+    if (state.busyKind === "generate") {
+      await cancelGeneration();
       return;
     }
     if (state.codex.loaded && !state.codex.connected) {
@@ -2191,10 +2335,18 @@
           source_dir: state.config.sourceDir,
           out_dir: state.config.outDir,
           auto_save: state.config.autoSave,
+          diary_length_code: state.config.diaryLength,
           ...currentLanguagePayload(),
         }),
         GENERATION_REQUEST_TIMEOUT_MS,
       );
+      if (payload?.cancelled) {
+        syncGenerationProgress(payload.progress);
+        setFooter(t("footer.cancelled"));
+        setWarning("");
+        showToast(t("toast.cancelled"));
+        return;
+      }
       if (payload?.error) {
         syncGenerationProgress(payload.progress);
         setFooter(t("footer.generateFailed"));
@@ -2210,6 +2362,7 @@
       state.nav = "diary";
       state.timelineVisibleCount = TIMELINE_PREVIEW;
       setCalendarCursor(payload.target_date);
+      if (payload.diary_length_code) state.config.diaryLength = payload.diary_length_code;
       renderConfig();
       setNavActive();
       syncSegmented();
@@ -2592,6 +2745,18 @@
         showToast(
           t("toast.languageChanged", {
             language: displayLanguageLabel(),
+          }),
+        );
+      });
+    }
+
+    const diaryLength = $("#diary-length");
+    if (diaryLength) {
+      diaryLength.addEventListener("change", (e) => {
+        setDiaryLength(e.target.value);
+        showToast(
+          t("toast.lengthChanged", {
+            length: t(`length.${getDiaryLengthOption().key}`),
           }),
         );
       });

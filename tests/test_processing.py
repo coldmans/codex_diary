@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from codex_diary.llm import LLMError, load_provider_from_codex
+from codex_diary.llm import GenerationCancelledError, LLMError, load_provider_from_codex
 from codex_diary.generator import (
     build_diary,
     build_llm_prompt,
@@ -342,6 +342,22 @@ class ProcessingTests(unittest.TestCase):
         self.assertNotIn(long_tail, prompt)
         self.assertIn("Prompt events included: 1", prompt)
 
+    def test_build_llm_prompt_includes_diary_length_guidance(self) -> None:
+        events = [make_event("length.md", "10min", 4, 10, "Checked a long record and compared several views.")]
+        prompt = build_llm_prompt(
+            mode="finalize",
+            target_date="2026-04-21",
+            day_boundary_hour=4,
+            stats={"used_10min": 1, "used_6h": 0},
+            events=events,
+            output_language="ko",
+            diary_length="very-long",
+        )
+
+        self.assertIn("Diary length: very-long", prompt)
+        self.assertIn("Length target: very-long.", prompt)
+        self.assertIn("(6-8 full paragraphs)", prompt)
+
     def test_choose_events_adds_6h_when_10min_coverage_is_narrow(self) -> None:
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -518,6 +534,43 @@ class ProcessingTests(unittest.TestCase):
         self.assertTrue(progress_updates)
         self.assertEqual(progress_updates[-1]["status"], "failed")
         self.assertEqual(progress_updates[-1]["phase"], "collect")
+
+    def test_build_diary_raises_when_cancelled(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_path = root / "chronicle.md"
+            source_path.write_text(
+                "## Recording summary\n"
+                "### Morning\n"
+                "- Reviewed the calendar layout and confirmed the current diary flow.\n",
+                encoding="utf-8",
+            )
+            source = ChronicleSource(
+                path=source_path,
+                recorded_at_utc=datetime(2026, 4, 21, 5, 0, tzinfo=timezone.utc),
+                recorded_at_local=datetime(2026, 4, 21, 5, 0, tzinfo=timezone.utc),
+                granularity="10min",
+                diary_date=date(2026, 4, 21),
+            )
+
+            def cancelled_provider(prompt, output_language, progress=None, should_cancel=None):  # type: ignore[no-untyped-def]
+                raise GenerationCancelledError("생성을 취소했어요.")
+
+            provider = SimpleNamespace(generate_markdown=cancelled_provider)
+
+            with patch("codex_diary.generator.discover_sources", return_value=[source]):
+                with self.assertRaises(GenerationCancelledError):
+                    build_diary(
+                        target_date=date(2026, 4, 21),
+                        mode="finalize",
+                        source_dir=root,
+                        out_dir=root,
+                        day_boundary_hour=4,
+                        output_language="ko",
+                        diary_length="medium",
+                        provider=provider,
+                        should_cancel=lambda: False,
+                    )
 
     def test_output_path_is_single_file_per_day(self) -> None:
         out_dir = Path("/tmp/codex-diary-output")

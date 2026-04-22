@@ -664,6 +664,36 @@ class DiaryBridge:
                 return False
         return False
 
+    def cancel_generation(self) -> dict[str, Any]:
+        if not self._generation_lock.locked():
+            return {
+                "cancelled": False,
+                "progress": self._current_progress(),
+                "message": "진행 중인 생성 작업이 없어요.",
+            }
+        self._cancel_requested.set()
+        current = self._current_progress()
+        progress = self._update_progress(
+            status="cancelling",
+            phase=current.get("phase") or "collect",
+            percent=current.get("percent"),
+            current=current.get("current"),
+            total=current.get("total"),
+            step_key=current.get("step_key"),
+            detail_key="loading.detail.cancel",
+            target_date=self.config.target_date.isoformat(),
+            output_language_code=self.config.output_language_code,
+            mode=current.get("mode") or "finalize",
+            stats=dict(current.get("stats") or {}),
+            indeterminate=True,
+            error=None,
+        )
+        return {
+            "cancelled": False,
+            "progress": progress,
+            "message": "생성을 취소하는 중이에요.",
+        }
+
     def connect_codex(self) -> dict[str, Any]:
         status = self._codex_status_details()
         if status["connected"]:
@@ -718,11 +748,13 @@ class DiaryBridge:
                 "progress": self._current_progress(),
             }
         try:
+            self._cancel_requested.clear()
             self.config.target_date = request["target_date"]
             self.config.boundary_hour = request["boundary_hour"]
             self.config.source_dir = request["source_dir"]
             self.config.out_dir = request["out_dir"]
             self.config.output_language_code = request["output_language_code"]
+            self.config.diary_length_code = request["diary_length_code"]
             target_date_iso = request["target_date"].isoformat()
 
             def report_progress(update: dict[str, Any]) -> dict[str, Any]:
@@ -752,6 +784,7 @@ class DiaryBridge:
                     "status": "running",
                     "phase": "collect",
                     "percent": 4,
+                    "stats": {"diary_length": request["diary_length_code"]},
                 }
             )
 
@@ -762,7 +795,9 @@ class DiaryBridge:
                 out_dir=request["out_dir"],
                 day_boundary_hour=request["boundary_hour"],
                 output_language=request["output_language_code"],
+                diary_length=request["diary_length_code"],
                 progress=report_progress,
+                should_cancel=self._cancel_requested.is_set,
             )
             saved_path: Optional[Path] = None
             if request["auto_save"]:
@@ -800,10 +835,34 @@ class DiaryBridge:
                     "saved_path": str(saved_path) if saved_path else None,
                     "output_language_code": request["output_language_code"],
                     "output_language": get_language_option(request["output_language_code"]).label,
+                    "diary_length_code": request["diary_length_code"],
+                    "diary_length": get_diary_length_option(request["diary_length_code"]).label,
                     "progress": completed_progress,
                 }
             )
             return payload
+        except GenerationCancelledError as exc:
+            current = self._current_progress()
+            cancelled_progress = self._update_progress(
+                status="cancelled",
+                phase=current.get("phase") or "collect",
+                percent=current.get("percent"),
+                current=current.get("current"),
+                total=current.get("total"),
+                step_key=current.get("step_key"),
+                detail_key="loading.detail.cancelled",
+                target_date=request["target_date"].isoformat(),
+                output_language_code=request["output_language_code"],
+                mode=request["mode"],
+                stats=dict(current.get("stats") or {}),
+                indeterminate=False,
+                error=None,
+            )
+            return {
+                "cancelled": True,
+                "message": str(exc),
+                "progress": cancelled_progress,
+            }
         except Exception as exc:  # noqa: BLE001 — surface all errors to UI
             current = self._current_progress()
             failed_progress = self._update_progress(
@@ -823,6 +882,7 @@ class DiaryBridge:
             )
             return {"error": str(exc), "progress": failed_progress}
         finally:
+            self._cancel_requested.clear()
             self._generation_lock.release()
 
     def load_date(self, iso: str, out_dir: str | None = None) -> dict[str, Any]:
@@ -896,6 +956,16 @@ class DiaryBridge:
             language_code = normalize_language_code(payload.get(key))
             if language_code:
                 break
+        diary_length_code = None
+        for key in (
+            "diary_length_code",
+            "diary_length",
+            "length",
+            "entry_length",
+        ):
+            diary_length_code = normalize_diary_length(payload.get(key))
+            if diary_length_code:
+                break
         target_date = resolve_target_date(iso, day_boundary_hour=boundary)
         return {
             "target_date": target_date,
@@ -905,6 +975,7 @@ class DiaryBridge:
             "out_dir": out_dir,
             "auto_save": bool(payload.get("auto_save", True)),
             "output_language_code": language_code or DEFAULT_LANGUAGE_CODE,
+            "diary_length_code": diary_length_code or DEFAULT_DIARY_LENGTH_CODE,
         }
 
 

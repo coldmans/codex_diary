@@ -1,6 +1,8 @@
 import unittest
 from datetime import date
 from pathlib import Path
+import threading
+import time
 from unittest.mock import patch
 
 from codex_diary.app import (
@@ -15,6 +17,7 @@ from codex_diary.app import (
     split_markdown_views,
     week_bounds,
 )
+from codex_diary.llm import GenerationCancelledError
 from codex_diary.diary_structure import structure_diary
 from codex_diary.markdown_html import render_markdown
 from codex_diary.models import DiaryBuildResult
@@ -235,6 +238,7 @@ class DiaryBridgeTests(unittest.TestCase):
         self.assertIn("생성", payload["status"])
         self.assertEqual(payload["progress"]["status"], "idle")
         self.assertEqual(payload["progress"]["percent"], 0)
+        self.assertEqual(payload["config"]["diary_length_code"], "short")
 
     def test_generate_returns_views_and_saves_file(self) -> None:
         bridge = DiaryBridge()
@@ -306,7 +310,7 @@ class DiaryBridgeTests(unittest.TestCase):
         self.assertFalse(payload["generation_available"])
         self.assertEqual(payload["progress"]["status"], "failed")
 
-    def test_generate_passes_output_language_to_builder(self) -> None:
+    def test_generate_passes_output_language_and_length_to_builder(self) -> None:
         bridge = DiaryBridge()
         out_dir = Path("/tmp/codex-diary-bridge-lang")
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -333,12 +337,15 @@ class DiaryBridgeTests(unittest.TestCase):
                         "out_dir": str(out_dir),
                         "auto_save": False,
                         "output_language_code": "ja",
+                        "diary_length_code": "very-long",
                     }
                 )
 
         self.assertEqual(build_mock.call_args.kwargs["output_language"], "ja")
+        self.assertEqual(build_mock.call_args.kwargs["diary_length"], "very-long")
         self.assertEqual(payload["output_language_code"], "ja")
         self.assertEqual(payload["output_language"], "Japanese")
+        self.assertEqual(payload["diary_length_code"], "very-long")
 
     def test_generate_returns_failed_progress_when_builder_errors(self) -> None:
         bridge = DiaryBridge()
@@ -359,6 +366,53 @@ class DiaryBridgeTests(unittest.TestCase):
         self.assertEqual(payload["error"], "missing summaries")
         self.assertEqual(payload["progress"]["status"], "failed")
         self.assertEqual(payload["progress"]["phase"], "collect")
+
+    def test_cancel_generation_stops_active_build(self) -> None:
+        bridge = DiaryBridge()
+        payload_box: dict[str, object] = {}
+        started = threading.Event()
+
+        def fake_build_diary(**kwargs):  # type: ignore[no-untyped-def]
+            started.set()
+            progress = kwargs["progress"]
+            should_cancel = kwargs["should_cancel"]
+            progress(
+                {
+                    "status": "running",
+                    "phase": "write",
+                    "detail_key": "loading.detail.writeWait",
+                    "percent": 78,
+                    "indeterminate": True,
+                }
+            )
+            while not should_cancel():
+                time.sleep(0.01)
+            raise GenerationCancelledError("생성을 취소했어요.")
+
+        def run_generate() -> None:
+            with patch.object(bridge, "_codex_status_details", return_value=self.CONNECTED_STATUS):
+                with patch("codex_diary.app.build_diary", side_effect=fake_build_diary):
+                    payload_box["payload"] = bridge.generate(
+                        {
+                            "target_date": "2026-04-21",
+                            "boundary_hour": 4,
+                            "mode": "finalize",
+                            "source_dir": "/tmp/codex-diary-source",
+                            "out_dir": "/tmp/codex-diary-out",
+                            "auto_save": True,
+                        }
+                    )
+
+        worker = threading.Thread(target=run_generate)
+        worker.start()
+        self.assertTrue(started.wait(timeout=1))
+
+        cancel_payload = bridge.cancel_generation()
+        worker.join(timeout=2)
+
+        self.assertEqual(cancel_payload["progress"]["status"], "cancelling")
+        self.assertTrue(payload_box["payload"]["cancelled"])
+        self.assertEqual(payload_box["payload"]["progress"]["status"], "cancelled")
 
     def test_connect_codex_launches_device_auth_on_macos(self) -> None:
         bridge = DiaryBridge()

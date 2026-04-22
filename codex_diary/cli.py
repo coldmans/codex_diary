@@ -5,6 +5,11 @@ from pathlib import Path
 import sys
 
 from .chronicle import resolve_target_date
+from .diary_length import (
+    DEFAULT_DIARY_LENGTH_CODE,
+    normalize_diary_length,
+    supported_diary_length_codes,
+)
 from .generator import build_diary, legacy_output_paths
 from .llm import LLMError
 from .i18n import (
@@ -66,6 +71,16 @@ def build_parser() -> argparse.ArgumentParser:
             f"지원 코드: {', '.join(supported_language_codes())}. 기본값은 en입니다."
         ),
     )
+    parser.add_argument(
+        "--length",
+        "--diary-length",
+        dest="diary_length",
+        default=DEFAULT_DIARY_LENGTH_CODE,
+        help=(
+            "일기 길이를 지정합니다. "
+            f"지원 값: {', '.join(supported_diary_length_codes())}. 기본값은 short입니다."
+        ),
+    )
     return parser
 
 
@@ -81,6 +96,14 @@ def run(argv: list[str] | None = None) -> int:
         print(
             "--language는 지원되는 언어 코드 또는 이름이어야 합니다. "
             f"지원 코드: {', '.join(supported_language_codes())}",
+            file=sys.stderr,
+        )
+        return 2
+    diary_length_code = normalize_diary_length(args.diary_length)
+    if not diary_length_code:
+        print(
+            "--length는 지원되는 길이 코드여야 합니다. "
+            f"지원 값: {', '.join(supported_diary_length_codes())}",
             file=sys.stderr,
         )
         return 2
@@ -105,6 +128,7 @@ def run(argv: list[str] | None = None) -> int:
             out_dir=out_dir,
             day_boundary_hour=args.day_boundary_hour,
             output_language=language_code,
+            diary_length=diary_length_code,
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)

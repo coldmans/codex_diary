@@ -12,7 +12,7 @@ from codex_diary.cli import run
 
 
 class CliTests(unittest.TestCase):
-    def test_language_flag_is_forwarded(self) -> None:
+    def test_language_and_length_flags_are_forwarded(self) -> None:
         result = DiaryBuildResult(
             target_date=date(2026, 4, 21),
             mode="finalize",
@@ -38,6 +38,34 @@ class CliTests(unittest.TestCase):
                 )
         self.assertEqual(exit_code, 0)
         self.assertEqual(build_mock.call_args.kwargs["output_language"], "ja")
+        self.assertEqual(build_mock.call_args.kwargs["diary_length"], "short")
+
+    def test_length_flag_is_forwarded(self) -> None:
+        result = DiaryBuildResult(
+            target_date=date(2026, 4, 21),
+            mode="finalize",
+            markdown="# Sample\n",
+            output_path=Path("/tmp/2026-04-21.md"),
+            used_llm=False,
+            stats={},
+            warnings=(),
+        )
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch("codex_diary.cli.build_diary", return_value=result) as build_mock:
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                exit_code = run(
+                    [
+                        "finalize",
+                        "--date",
+                        "2026-04-21",
+                        "--length",
+                        "very-long",
+                        "--dry-run",
+                    ]
+                )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(build_mock.call_args.kwargs["diary_length"], "very-long")
 
     def test_invalid_language_is_rejected(self) -> None:
         stdout = StringIO()
@@ -46,6 +74,14 @@ class CliTests(unittest.TestCase):
             exit_code = run(["finalize", "--language", "pirate"])
         self.assertEqual(exit_code, 2)
         self.assertIn("--language", stderr.getvalue())
+
+    def test_invalid_length_is_rejected(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+            exit_code = run(["finalize", "--length", "novella"])
+        self.assertEqual(exit_code, 2)
+        self.assertIn("--length", stderr.getvalue())
 
     def test_graceful_failure_when_no_input_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,0 +1,5 @@
+[     235ms] NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.
+    at ensureDiaryLengthSetting (http://127.0.0.1:8765/app.js:795:28)
+    at installRuntimeUi (http://127.0.0.1:8765/app.js:802:5)
+    at HTMLDocument.boot (http://127.0.0.1:8765/app.js:2896:5)
+[     235ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://127.0.0.1:8765/favicon.ico:0

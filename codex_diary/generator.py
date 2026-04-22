@@ -1126,7 +1126,15 @@ def normalize_output_language(
     default: str = DEFAULT_OUTPUT_LANGUAGE,
 ) -> str:
     if value is None:
-    return default
+        return default
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return default
+    resolved = OUTPUT_LANGUAGE_ALIAS_MAP.get(normalized)
+    if not resolved:
+        supported = ", ".join(spec["label"] for spec in OUTPUT_LANGUAGE_SPECS.values())
+        raise ValueError(f"지원하지 않는 출력 언어입니다: {value}. 지원 언어: {supported}")
+    return resolved
 
 
 def normalize_diary_length_code(
@@ -1145,14 +1153,6 @@ def diary_length_profile(length: str | None) -> dict[str, Any]:
 def raise_if_cancelled(should_cancel: Optional[CancellationCheck]) -> None:
     if should_cancel is not None and should_cancel():
         raise GenerationCancelledError("생성을 취소했어요.")
-    normalized = str(value).strip().lower()
-    if not normalized:
-        return default
-    resolved = OUTPUT_LANGUAGE_ALIAS_MAP.get(normalized)
-    if not resolved:
-        supported = ", ".join(spec["label"] for spec in OUTPUT_LANGUAGE_SPECS.values())
-        raise ValueError(f"지원하지 않는 출력 언어입니다: {value}. 지원 언어: {supported}")
-    return resolved
 
 
 def output_language_label(output_language: str) -> str:

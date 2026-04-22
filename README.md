@@ -29,6 +29,8 @@ The current diary policy is:
 - Supports optional redaction before generation
 - Supports CLI and a desktop app built with `pywebview`
 - Supports multilingual diary output
+- Supports four diary-length presets: `short`, `medium`, `long`, `very-long`
+- Supports cancelling an in-flight generation from the desktop app
 - Can package the desktop app into a macOS `.dmg`
 
 ## Documentation languages
@@ -77,6 +79,7 @@ codex-diary finalize --date 2026-04-21
 codex-diary draft-update --date 2026-04-21
 codex-diary finalize --date 2026-04-21 --dry-run
 codex-diary finalize --date 2026-04-21 --output-language ko
+codex-diary finalize --date 2026-04-21 --length very-long
 codex-diary finalize --source-dir ~/.codex/memories_extensions/chronicle/resources
 codex-diary finalize --out-dir ./custom-output --day-boundary-hour 4
 ```
@@ -90,6 +93,7 @@ Main options:
 - `--dry-run`: print to stdout without writing a file
 - `--day-boundary-hour <0-23>`: set the local day boundary, default `4`
 - `--language <code>` or `--output-language <code>`: choose the output language, default `en`
+- `--length <code>` or `--diary-length <code>`: choose diary length, one of `short`, `medium`, `long`, `very-long`
 
 If Codex is not connected, the command exits with:
 
@@ -116,7 +120,9 @@ The app supports:
 - Selecting a target date
 - Choosing Chronicle input and output folders
 - Choosing the output language
+- Choosing the diary length preset
 - Switching between `draft-update` and `finalize`
+- Cancelling an in-flight generation
 - Viewing report, diary, and raw Markdown inside the app
 - Browsing recent dates and weekly archives
 - Copying the current view

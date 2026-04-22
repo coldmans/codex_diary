@@ -687,6 +687,15 @@ img {
   box-shadow: 0 4px 10px rgba(239, 125, 103, 0.26);
 }
 
+.cta.is-cancel {
+  background: linear-gradient(135deg, #d87a72 0%, #c85f63 100%);
+  box-shadow: 0 6px 14px rgba(200, 95, 99, 0.28);
+}
+
+.cta.is-cancel:hover {
+  box-shadow: 0 10px 22px rgba(200, 95, 99, 0.34);
+}
+
 .cta__spark {
   font-size: 12px;
   filter: drop-shadow(0 0 6px rgba(255, 240, 215, 0.6));
