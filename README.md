@@ -1,6 +1,9 @@
-![Codex Diary app demo](docs/assets/codex-diary-demo.svg)
+<p align="center">
+  <img alt="Codex Diary Korean diary example" src="docs/assets/app-example-ko.png" width="49%">
+  <img alt="Codex Diary English diary example" src="docs/assets/app-example-en.png" width="49%">
+</p>
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
+[English](README.md) | [한국어](README.ko.md)
 
 # codex-diary
 
@@ -41,7 +44,7 @@ The generator currently depends on a local `codex` CLI login session. If Codex i
 
 During generation, selected and redacted Chronicle event snippets are sent to the local `codex exec` command so Codex can write the final diary/report draft. The app now runs that call with `--ephemeral`, but users should still treat Chronicle summaries as potentially sensitive input.
 
-English is the source-of-truth README. Localized READMEs may lag slightly when the project changes.
+English is the source-of-truth README. The Korean README may lag slightly when the project changes.
 
 ## Why this tool exists
 
@@ -68,13 +71,13 @@ The current diary policy is:
 
 ## Documentation languages
 
-GitHub does not provide automatic README language switching. The usual approach is:
+GitHub does not provide automatic README language switching. This repository currently keeps:
 
 - Keep one primary `README.md`
-- Add translated files like `README.ko.md` and `README.ja.md`
-- Link them at the top of each README
+- Keep one Korean translation in `README.ko.md`
+- Link both files at the top of each README
 
-That structure is set up in this repository now, so adding another language later is straightforward.
+Additional translations can be added later if needed.
 
 ## Requirements
 
