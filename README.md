@@ -2,17 +2,13 @@
 
 # codex-diary
 
-Generate a daily work report plus diary draft from Chronicle Markdown summaries.
+## First: Enable Chronicle
 
-`codex-diary` is a local tool that reads Chronicle summary files such as `~/.codex/memories_extensions/chronicle/resources/*.md` and turns them into a dated Markdown diary. It does not read raw screen recordings, JPG screenshots, or OCR JSONL directly. The intended input is Chronicle's already-generated summary Markdown.
+Codex Diary reads Chronicle Markdown summaries, so turn on `Chronicle research preview` in Codex before creating diaries.
 
-The generator currently depends on a local `codex` CLI login session. If Codex is not available or not logged in, the tool stops with a connection message instead of silently falling back to a different provider.
+![Codex settings showing Chronicle research preview enabled](docs/assets/chronicle-settings-en.png)
 
-During generation, selected and redacted Chronicle event snippets are sent to the local `codex exec` command so Codex can write the final diary/report draft. The app now runs that call with `--ephemeral`, but users should still treat Chronicle summaries as potentially sensitive input.
-
-English is the source-of-truth README. Localized READMEs may lag slightly when the project changes.
-
-## Install on macOS
+## Install with Homebrew
 
 Homebrew is the recommended install path for GitHub users:
 
@@ -32,6 +28,18 @@ If macOS says Apple cannot check the app for malicious software, drag the app to
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Codex Diary.app"
 ```
+
+## What It Does
+
+Generate a daily work report plus diary draft from Chronicle Markdown summaries.
+
+`codex-diary` is a local tool that reads Chronicle summary files such as `~/.codex/memories_extensions/chronicle/resources/*.md` and turns them into a dated Markdown diary. It does not read raw screen recordings, JPG screenshots, or OCR JSONL directly. The intended input is Chronicle's already-generated summary Markdown.
+
+The generator currently depends on a local `codex` CLI login session. If Codex is not available or not logged in, the tool stops with a connection message instead of silently falling back to a different provider.
+
+During generation, selected and redacted Chronicle event snippets are sent to the local `codex exec` command so Codex can write the final diary/report draft. The app now runs that call with `--ephemeral`, but users should still treat Chronicle summaries as potentially sensitive input.
+
+English is the source-of-truth README. Localized READMEs may lag slightly when the project changes.
 
 ## Why this tool exists
 

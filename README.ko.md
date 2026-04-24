@@ -2,17 +2,13 @@
 
 # codex-diary
 
-Chronicle Markdown 요약을 읽어서 날짜별 작업 보고서 + 일기 초안을 생성하는 로컬 도구입니다.
+## 먼저 Chronicle 켜기
 
-`codex-diary`는 `~/.codex/memories_extensions/chronicle/resources/*.md` 같은 Chronicle 요약 파일을 읽어서, 날짜 기준 Markdown 일기를 만들어 줍니다. 원본 화면 녹화, JPG 스크린샷, OCR JSONL을 직접 처리하지 않고, Chronicle이 이미 만들어 둔 요약 Markdown을 입력으로 사용하는 것이 핵심입니다.
+Codex Diary는 Chronicle Markdown 요약을 읽어서 일기를 만듭니다. 일기를 생성하기 전에 Codex 설정에서 `Chronicle 리서치 미리보기`를 켜 주세요.
 
-현재 생성은 로컬 `codex` CLI 로그인 세션에 의존합니다. Codex가 설치되지 않았거나 로그인되지 않았다면 다른 모델로 조용히 대체하지 않고 연결 안내 메시지와 함께 종료합니다.
+![Codex 설정에서 Chronicle 리서치 미리보기를 켠 화면](docs/assets/chronicle-settings-ko.png)
 
-생성 중에는 선택 및 마스킹된 Chronicle 이벤트 일부가 로컬 `codex exec` 명령으로 전달되어 최종 일기/보고서 초안 작성에 사용됩니다. 이 호출은 `--ephemeral`로 실행되지만, Chronicle 요약 자체는 민감할 수 있는 입력으로 취급하는 것이 좋습니다.
-
-영문 `README.md`를 기준 문서로 두고, 번역본은 프로젝트 변경 시 약간 늦게 갱신될 수 있습니다.
-
-## macOS 설치
+## Homebrew로 설치
 
 GitHub 사용자는 Homebrew 설치를 권장합니다.
 
@@ -32,6 +28,18 @@ macOS가 “Apple이 악성 소프트웨어가 있는지 확인할 수 없음”
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Codex Diary.app"
 ```
+
+## 무엇을 하는 도구인가
+
+Chronicle Markdown 요약을 읽어서 날짜별 작업 보고서 + 일기 초안을 생성하는 로컬 도구입니다.
+
+`codex-diary`는 `~/.codex/memories_extensions/chronicle/resources/*.md` 같은 Chronicle 요약 파일을 읽어서, 날짜 기준 Markdown 일기를 만들어 줍니다. 원본 화면 녹화, JPG 스크린샷, OCR JSONL을 직접 처리하지 않고, Chronicle이 이미 만들어 둔 요약 Markdown을 입력으로 사용하는 것이 핵심입니다.
+
+현재 생성은 로컬 `codex` CLI 로그인 세션에 의존합니다. Codex가 설치되지 않았거나 로그인되지 않았다면 다른 모델로 조용히 대체하지 않고 연결 안내 메시지와 함께 종료합니다.
+
+생성 중에는 선택 및 마스킹된 Chronicle 이벤트 일부가 로컬 `codex exec` 명령으로 전달되어 최종 일기/보고서 초안 작성에 사용됩니다. 이 호출은 `--ephemeral`로 실행되지만, Chronicle 요약 자체는 민감할 수 있는 입력으로 취급하는 것이 좋습니다.
+
+영문 `README.md`를 기준 문서로 두고, 번역본은 프로젝트 변경 시 약간 늦게 갱신될 수 있습니다.
 
 ## 왜 이런 구조인가
 
