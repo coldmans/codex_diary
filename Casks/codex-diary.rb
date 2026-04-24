@@ -1,6 +1,6 @@
 cask "codex-diary" do
   version "0.1.0"
-  sha256 "40e106d97731758503a5642905d7ff921c84f8755e3b73760eac88a761eac961"
+  sha256 "8bf5e401c9bc90039c43b619e480e3838183ffcd8a082572ce910f927cab8af4"
 
   url "https://github.com/coldmans/codex_diary/releases/download/v#{version}/Codex-Diary-#{version}-macOS.dmg",
       verified: "github.com/coldmans/codex_diary/"
