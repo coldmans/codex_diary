@@ -10,9 +10,17 @@ cask "codex-diary" do
 
   app "Codex Diary.app"
 
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Codex Diary.app"],
+                   must_succeed: false
+  end
+
   caveats <<~EOS
     Codex Diary is currently distributed as an unsigned macOS build.
-    If macOS blocks first launch, Control-click the app in Finder and choose Open.
+    The cask tries to remove the first-launch quarantine flag after install.
+    If macOS still blocks first launch, run:
+      xattr -dr com.apple.quarantine "#{appdir}/Codex Diary.app"
   EOS
 
   zap trash: [
