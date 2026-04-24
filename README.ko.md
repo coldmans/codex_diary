@@ -1,3 +1,5 @@
+![Codex Diary 앱 데모](docs/assets/codex-diary-demo.svg)
+
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
 
 # codex-diary
