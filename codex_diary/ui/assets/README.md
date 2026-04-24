@@ -10,6 +10,8 @@ the app falls back to a CSS/SVG cloud shape.
 | `mascot-diary.png` | Diary view right-side illustration; also reused in the loading screen |
 | `mascot-calendar.png` | Calendar view illustration |
 | `app-icon.png` | Source PNG for the macOS app icon; also used in the sidebar brand and diary heading |
+| `settings-gear.png` | Sidebar settings button sticker icon |
+| `todo-carry.png` | Carried-tomorrow task sticker icon |
 
 Transparent PNG is preferred.  SVG also works — rename the file to `.svg` and
 update the `<img>` src in `ui/index.html` if you want to keep it as SVG.

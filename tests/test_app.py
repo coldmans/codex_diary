@@ -27,6 +27,8 @@ SAMPLE_MARKDOWN = """# 2026-04-21 작업 일기
 
 > 샘플
 
+<!-- tags: #chargeCat #ui-polish #next-step -->
+
 ## 금일 작업 보고서
 
 ### 오늘 한 일
@@ -40,6 +42,8 @@ SAMPLE_MARKDOWN = """# 2026-04-21 작업 일기
 SAMPLE_MARKDOWN_EN = """# 2026-04-21 Work Diary
 
 > Sample
+
+<!-- tags: #chargeCat #timeline #review-pass -->
 
 ## Work Report
 
@@ -106,7 +110,36 @@ class AppHelperTests(unittest.TestCase):
         overview = build_weekly_overview(date(2026, 4, 22), list_daily_diary_files(weekly_dir))
         self.assertIn("2026-04-20 ~ 2026-04-26", overview)
         self.assertIn("2026-04-21", overview)
-        self.assertIn("# Day 2", overview)
+        self.assertIn("Day 2", overview)
+
+    def test_build_weekly_overview_keeps_only_compact_snapshot(self) -> None:
+        weekly_dir = Path("/tmp/codex-diary-weekly-compact")
+        weekly_dir.mkdir(parents=True, exist_ok=True)
+        (weekly_dir / "2026-04-21.md").write_text(
+            """# 2026-04-21 작업 일기
+
+<!-- tags: #chargeCat #review -->
+
+## 금일 작업 보고서
+
+### 오늘 한 일
+ChargeCat 쪽 흐름을 다시 보고 핵심 검증 순서를 정리했다.
+
+### 사소한 흐름까지 포함한 시간순 메모
+- [10:10] 첫 세부 흐름
+- [10:20] 두 번째 세부 흐름
+
+## 오늘의 일기 버전
+
+긴 본문 문장입니다.
+""",
+            encoding="utf-8",
+        )
+        overview = build_weekly_overview(date(2026, 4, 21), list_daily_diary_files(weekly_dir))
+        self.assertIn("ChargeCat 쪽 흐름을 다시 보고 핵심 검증 순서를 정리했다.", overview)
+        self.assertIn("#chargeCat #review", overview)
+        self.assertNotIn("[10:10] 첫 세부 흐름", overview)
+        self.assertNotIn("긴 본문 문장입니다.", overview)
 
     def test_build_weekly_overview_supports_selected_language(self) -> None:
         weekly_dir = Path("/tmp/codex-diary-weekly-en")
@@ -146,6 +179,13 @@ class MarkdownRenderTests(unittest.TestCase):
         self.assertNotIn("<script>", html)
         self.assertIn("&lt;script&gt;", html)
 
+    def test_link_href_escapes_quotes_and_blocks_script_scheme(self) -> None:
+        html = render_markdown('[bad](" onmouseover="alert(1))\n\n[script](javascript:alert(1))\n')
+        self.assertNotIn('onmouseover="alert(1)"', html)
+        self.assertNotIn("javascript:alert", html)
+        self.assertIn('href="&quot; onmouseover=&quot;alert(1"', html)
+        self.assertIn('href="#"', html)
+
     def test_render_views_produces_html(self) -> None:
         raw, html = render_views(SAMPLE_MARKDOWN)
         self.assertIn("보고서 내용", raw["report"])
@@ -158,6 +198,8 @@ class DiaryStructureTests(unittest.TestCase):
         diary = """# 2026-04-21 작업 일기
 
 > Chronicle 10분 요약 7개 바탕.
+
+<!-- tags: #chargeCat #ui-polish #next-step -->
 
 ## 금일 작업 보고서
 
@@ -190,6 +232,7 @@ class DiaryStructureTests(unittest.TestCase):
         structured = structure_diary(diary)
         self.assertEqual(structured["title"], "2026-04-21 작업 일기")
         self.assertIn("Chronicle", structured["intro_quote"])
+        self.assertEqual(structured["tags"], ["chargeCat", "ui-polish", "next-step"])
         self.assertIn("chargeCat", structured["report"]["today"])
         self.assertEqual(len(structured["report"]["timeline"]), 2)
         self.assertEqual(structured["report"]["timeline"][0]["time"], "13:19")
@@ -206,11 +249,13 @@ class DiaryStructureTests(unittest.TestCase):
         self.assertFalse(structured["has_report"])
         self.assertTrue(structured["has_diary"])
         self.assertEqual(structured["diary"], ["짧은 글."])
+        self.assertEqual(structured["tags"], [])
 
     def test_structure_extracts_english_sections(self) -> None:
         structured = structure_diary(SAMPLE_MARKDOWN_EN)
         self.assertTrue(structured["has_report"])
         self.assertTrue(structured["has_diary"])
+        self.assertEqual(structured["tags"], ["chargeCat", "timeline", "review-pass"])
         self.assertIn("Report body", structured["report"]["today"])
         self.assertEqual(structured["diary"], ["Diary body"])
 
@@ -226,6 +271,7 @@ class DiaryBridgeTests(unittest.TestCase):
 
     def test_get_state_includes_codex_status(self) -> None:
         bridge = DiaryBridge()
+        bridge.config.output_language_code = "ko"
         with patch.object(
             bridge,
             "_codex_status_details",
@@ -259,17 +305,24 @@ class DiaryBridgeTests(unittest.TestCase):
         )
 
         with patch.object(bridge, "_codex_status_details", return_value=self.CONNECTED_STATUS):
-            with patch("codex_diary.app.build_diary", return_value=fake_result):
-                payload = bridge.generate(
-                    {
-                        "target_date": "2026-04-21",
-                        "boundary_hour": 4,
-                        "mode": "finalize",
-                        "source_dir": "/tmp/codex-diary-source",
-                        "out_dir": str(out_dir),
-                        "auto_save": True,
-                    }
-                )
+            with patch.object(bridge, "_notify_generation_result") as notify_mock:
+                with patch("codex_diary.app.build_diary", return_value=fake_result):
+                    payload = bridge.generate(
+                        {
+                            "target_date": "2026-04-21",
+                            "boundary_hour": 4,
+                            "mode": "finalize",
+                            "source_dir": "/tmp/codex-diary-source",
+                            "out_dir": str(out_dir),
+                            "auto_save": True,
+                        }
+                    )
+
+        notify_mock.assert_called_once_with(
+            success=True,
+            target_date="2026-04-21",
+            output_language_code="en",
+        )
 
         self.assertEqual(payload["target_date"], "2026-04-21")
         self.assertIn("보고서 내용", payload["views"]["report"])
@@ -302,11 +355,12 @@ class DiaryBridgeTests(unittest.TestCase):
                         "source_dir": "/tmp/codex-diary-source",
                         "out_dir": "/tmp/codex-diary-out",
                         "auto_save": True,
+                        "output_language_code": "ja",
                     }
                 )
 
         build_mock.assert_not_called()
-        self.assertEqual(payload["error"], "먼저 codex를 연결해주세요.")
+        self.assertEqual(payload["error"], "先に Codex を接続してください。")
         self.assertFalse(payload["generation_available"])
         self.assertEqual(payload["progress"]["status"], "failed")
 
@@ -327,45 +381,89 @@ class DiaryBridgeTests(unittest.TestCase):
         )
 
         with patch.object(bridge, "_codex_status_details", return_value=self.CONNECTED_STATUS):
-            with patch("codex_diary.app.build_diary", return_value=fake_result) as build_mock:
-                payload = bridge.generate(
-                    {
-                        "target_date": "2026-04-21",
-                        "boundary_hour": 4,
-                        "mode": "finalize",
-                        "source_dir": "/tmp/codex-diary-source",
-                        "out_dir": str(out_dir),
-                        "auto_save": False,
-                        "output_language_code": "ja",
-                        "diary_length_code": "very-long",
-                    }
-                )
+            with patch.object(bridge, "_notify_generation_result"):
+                with patch("codex_diary.app.build_diary", return_value=fake_result) as build_mock:
+                    payload = bridge.generate(
+                        {
+                            "target_date": "2026-04-21",
+                            "boundary_hour": 4,
+                            "mode": "finalize",
+                            "source_dir": "/tmp/codex-diary-source",
+                            "out_dir": str(out_dir),
+                            "auto_save": False,
+                            "output_language_code": "ja",
+                            "diary_length_code": "very-long",
+                            "codex_model": "gpt-5.4",
+                        }
+                    )
 
         self.assertEqual(build_mock.call_args.kwargs["output_language"], "ja")
         self.assertEqual(build_mock.call_args.kwargs["diary_length"], "very-long")
+        self.assertEqual(build_mock.call_args.kwargs["codex_model"], "gpt-5.4")
         self.assertEqual(payload["output_language_code"], "ja")
         self.assertEqual(payload["output_language"], "Japanese")
         self.assertEqual(payload["diary_length_code"], "very-long")
+        self.assertEqual(payload["codex_model"], "gpt-5.4")
 
     def test_generate_returns_failed_progress_when_builder_errors(self) -> None:
         bridge = DiaryBridge()
 
         with patch.object(bridge, "_codex_status_details", return_value=self.CONNECTED_STATUS):
-            with patch("codex_diary.app.build_diary", side_effect=FileNotFoundError("missing summaries")):
-                payload = bridge.generate(
-                    {
-                        "target_date": "2026-04-21",
-                        "boundary_hour": 4,
-                        "mode": "finalize",
-                        "source_dir": "/tmp/codex-diary-source",
-                        "out_dir": "/tmp/codex-diary-out",
-                        "auto_save": True,
-                    }
-                )
+            with patch.object(bridge, "_notify_generation_result") as notify_mock:
+                with patch("codex_diary.app.build_diary", side_effect=FileNotFoundError("missing summaries")):
+                    payload = bridge.generate(
+                        {
+                            "target_date": "2026-04-21",
+                            "boundary_hour": 4,
+                            "mode": "finalize",
+                            "source_dir": "/tmp/codex-diary-source",
+                            "out_dir": "/tmp/codex-diary-out",
+                            "auto_save": True,
+                        }
+                    )
 
+        notify_mock.assert_not_called()
         self.assertEqual(payload["error"], "missing summaries")
         self.assertEqual(payload["progress"]["status"], "failed")
         self.assertEqual(payload["progress"]["phase"], "collect")
+
+    def test_generate_notifies_when_write_phase_fails(self) -> None:
+        bridge = DiaryBridge()
+
+        def fake_build_diary(**kwargs):  # type: ignore[no-untyped-def]
+            kwargs["progress"](
+                {
+                    "status": "running",
+                    "phase": "write",
+                    "detail_key": "loading.detail.writeWait",
+                    "percent": 78,
+                    "indeterminate": True,
+                }
+            )
+            raise RuntimeError("codex timeout")
+
+        with patch.object(bridge, "_codex_status_details", return_value=self.CONNECTED_STATUS):
+            with patch.object(bridge, "_notify_generation_result") as notify_mock:
+                with patch("codex_diary.app.build_diary", side_effect=fake_build_diary):
+                    payload = bridge.generate(
+                        {
+                            "target_date": "2026-04-21",
+                            "boundary_hour": 4,
+                            "mode": "finalize",
+                            "source_dir": "/tmp/codex-diary-source",
+                            "out_dir": "/tmp/codex-diary-out",
+                            "auto_save": True,
+                        }
+                    )
+
+        notify_mock.assert_called_once_with(
+            success=False,
+            target_date="2026-04-21",
+            output_language_code="en",
+        )
+        self.assertEqual(payload["error"], "codex timeout")
+        self.assertEqual(payload["progress"]["status"], "failed")
+        self.assertEqual(payload["progress"]["phase"], "write")
 
     def test_cancel_generation_stops_active_build(self) -> None:
         bridge = DiaryBridge()
@@ -432,6 +530,53 @@ class DiaryBridgeTests(unittest.TestCase):
         self.assertIn("Terminal", payload["message"])
         self.assertFalse(payload["connected"])
 
+    def test_show_system_notification_uses_app_native_notification(self) -> None:
+        bridge = DiaryBridge()
+
+        with patch("codex_diary.app.sys.platform", "darwin"):
+            with patch.object(bridge, "_show_native_system_notification", return_value=True) as native_mock:
+                with patch("codex_diary.app.subprocess.Popen") as popen_mock:
+                    bridge._show_system_notification(
+                        title="일기 생성 완료",
+                        message="2026-04-24 기록이 준비됐어요.",
+                    )
+
+        native_mock.assert_called_once_with(
+            title="일기 생성 완료",
+            message="2026-04-24 기록이 준비됐어요.",
+        )
+        popen_mock.assert_not_called()
+
+    def test_show_system_notification_does_not_fallback_to_osascript(self) -> None:
+        bridge = DiaryBridge()
+
+        with patch("codex_diary.app.sys.platform", "darwin"):
+            with patch.object(bridge, "_show_native_system_notification", return_value=False):
+                with patch("codex_diary.app.subprocess.Popen") as popen_mock:
+                    bridge._show_system_notification(
+                        title="일기 생성 완료",
+                        message="2026-04-24 기록이 준비됐어요.",
+                    )
+
+        popen_mock.assert_not_called()
+
+    def test_show_native_system_notification_noops_without_pyobjc(self) -> None:
+        bridge = DiaryBridge()
+
+        def fake_import(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if name == "AppKit":
+                raise ImportError("missing AppKit")
+            return __import__(name, *args, **kwargs)
+
+        with patch("codex_diary.app.sys.platform", "darwin"):
+            with patch("builtins.__import__", side_effect=fake_import):
+                self.assertFalse(
+                    bridge._show_native_system_notification(
+                        title="일기 생성 완료",
+                        message="2026-04-24 기록이 준비됐어요.",
+                    )
+                )
+
     def test_generate_removes_legacy_draft_file(self) -> None:
         bridge = DiaryBridge()
         out_dir = Path("/tmp/codex-diary-bridge-legacy")
@@ -452,18 +597,20 @@ class DiaryBridgeTests(unittest.TestCase):
         )
 
         with patch.object(bridge, "_codex_status_details", return_value=self.CONNECTED_STATUS):
-            with patch("codex_diary.app.build_diary", return_value=fake_result):
-                bridge.generate(
-                    {
-                        "target_date": "2026-04-21",
-                        "boundary_hour": 4,
-                        "mode": "draft-update",
-                        "source_dir": "/tmp/codex-diary-source",
-                        "out_dir": str(out_dir),
-                        "auto_save": True,
-                    }
-                )
+            with patch.object(bridge, "_notify_generation_result"):
+                with patch("codex_diary.app.build_diary", return_value=fake_result) as build_mock:
+                    bridge.generate(
+                        {
+                            "target_date": "2026-04-21",
+                            "boundary_hour": 4,
+                            "mode": "draft-update",
+                            "source_dir": "/tmp/codex-diary-source",
+                            "out_dir": str(out_dir),
+                            "auto_save": True,
+                        }
+                    )
 
+        self.assertEqual(build_mock.call_args.kwargs["mode"], "finalize")
         self.assertFalse(legacy_file.exists())
         self.assertTrue(target.exists())
 

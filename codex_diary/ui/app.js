@@ -3,7 +3,6 @@
 
   const TIMELINE_PREVIEW = 8;
   const TIMELINE_STEP = 20;
-  const GENERATION_REQUEST_TIMEOUT_MS = 255000;
   const LOADING_PHASE_INDEX = {
     collect: 0,
     organize: 0,
@@ -28,8 +27,14 @@
   ];
   const MEMO_KEY = "codex-diary:memos:v1";
   const MOOD_KEY = "codex-diary:moods:v1";
+  const CARRYOVER_TODO_KEY = "codex-diary:carryover-todos:v1";
   const OUTPUT_LANGUAGE_KEY = "codex-diary:output-language:v1";
   const DIARY_LENGTH_KEY = "codex-diary:diary-length:v1";
+  const CODEX_MODEL_KEY = "codex-diary:codex-model:v1";
+  const BOUNDARY_HOUR_KEY = "codex-diary:boundary-hour:v1";
+  const AUTO_SAVE_KEY = "codex-diary:auto-save:v1";
+  const SOURCE_DIR_KEY = "codex-diary:source-dir:v1";
+  const OUT_DIR_KEY = "codex-diary:out-dir:v1";
   const RUNTIME_STYLE_ID = "codex-diary-runtime-style";
   const OUTPUT_LANGUAGES = [
     { key: "en", label: "English", nativeLabel: "English", locale: "en-US" },
@@ -50,6 +55,15 @@
     { key: "medium" },
     { key: "long" },
     { key: "very-long" },
+  ];
+  const DEFAULT_CODEX_MODEL = "gpt-5.4";
+  const CODEX_MODEL_OPTIONS = [
+    { key: "gpt-5.5", label: "GPT-5.5" },
+    { key: "gpt-5.4", label: "GPT-5.4" },
+    { key: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+    { key: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
+    { key: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
+    { key: "gpt-5.2", label: "GPT-5.2" },
   ];
   const ENTRY_TONES = [
     { accent: "#cf6f57", surface: "#fff0ea", border: "#f0c6bb" },
@@ -78,6 +92,7 @@
       autoSave: true,
       outputLanguage: DEFAULT_OUTPUT_LANGUAGE,
       diaryLength: "short",
+      codexModel: DEFAULT_CODEX_MODEL,
     },
     nav: "diary",
     view: "diary",
@@ -101,11 +116,30 @@
       message: "",
       detail: "",
     },
+    readiness: {
+      loaded: false,
+      sourceDir: "",
+      sourceExists: false,
+      sourceMarkdownCount: null,
+      outDir: "",
+      outExists: false,
+    },
     timelineVisibleCount: TIMELINE_PREVIEW,
     settingsOpen: false,
+    settingsLastFocus: null,
+    settingsHideTimer: null,
     menuOpen: false,
     languagePinned: false,
     diaryLengthPinned: false,
+    codexModelPinned: false,
+    boundaryPinned: false,
+    autoSavePinned: false,
+    sourceDirPinned: false,
+    outDirPinned: false,
+    stageRenderId: 0,
+    viewRequestId: 0,
+    boundaryRequestId: 0,
+    suppressNextClick: false,
   };
 
   function currentUiOption(value = state.config.outputLanguage) {
@@ -181,7 +215,23 @@
   }
 
   function loadingMetaText(snapshot) {
-    return "";
+    const stats = snapshot?.progress?.stats || {};
+    const diaryLengthKey =
+      normalizeDiaryLengthKey(state.generationMeta?.diaryLengthKey || state.config.diaryLength) ||
+      "short";
+    const sourcesTotal = Number(stats.sources_total || 0);
+    const eventsSelected = Number(stats.events_selected || 0);
+    if (diaryLengthKey === "very-long" || sourcesTotal >= 120 || eventsSelected >= 2500) {
+      return t("loading.meta.slow");
+    }
+    return t("loading.meta");
+  }
+
+  function generationRequestTimeoutMs(lengthKey = state.config.diaryLength) {
+    const key = normalizeDiaryLengthKey(lengthKey) || "short";
+    if (key === "very-long") return 405000;
+    if (key === "long") return 345000;
+    return 285000;
   }
 
   function loadingStepTitle(step) {
@@ -238,12 +288,12 @@
     if (!(state.busy && state.busyKind === "generate")) return;
     const root = document.querySelector("[data-loading-card]");
     if (!root) {
-      renderStage();
+      renderStage({ preserveScroll: true });
       return;
     }
 
     const snapshot = currentLoadingSnapshot();
-    const { elapsedSeconds, phaseIndex, phase } = snapshot;
+    const { elapsedSeconds, phase } = snapshot;
     const phaseText = root.querySelector("[data-loading-phase]");
     const elapsedText = root.querySelector("[data-loading-elapsed]");
     const metaText = root.querySelector("[data-loading-meta]");
@@ -273,20 +323,6 @@
       meterBar.classList.toggle("is-indeterminate", snapshot.indeterminate);
     }
 
-    root.querySelectorAll("[data-loading-step]").forEach((node) => {
-      const stepIndex = Number(node.dataset.loadingStep || 0);
-      const isDone = snapshot.progress?.status === "completed" ? stepIndex <= phaseIndex : stepIndex < phaseIndex;
-      node.classList.toggle("is-done", isDone);
-      node.classList.toggle("is-active", stepIndex === phaseIndex && snapshot.progress?.status !== "completed");
-      const badge = node.querySelector("[data-loading-badge]");
-      if (badge) {
-        badge.textContent = isDone ? "✓" : `${stepIndex + 1}`;
-      }
-      const detail = node.querySelector("[data-loading-step-detail]");
-      if (detail) {
-        detail.textContent = loadingStepDetail(LOADING_PHASES[stepIndex], stepIndex, snapshot);
-      }
-    });
   }
 
   function startLoadingPulse() {
@@ -501,15 +537,27 @@
     const formatter = new Intl.DateTimeFormat(currentUiLocale(), {
       weekday: currentUiLanguage() === "en" ? "short" : "narrow",
     });
+    const weekStart = weekStartDay();
     const sunday = new Date(Date.UTC(2024, 0, 7, 12, 0, 0));
     return Array.from({ length: 7 }, (_, index) =>
-      formatter.format(new Date(sunday.getTime() + index * 24 * 60 * 60 * 1000)),
+      formatter.format(new Date(sunday.getTime() + (weekStart + index) * 24 * 60 * 60 * 1000)),
     );
+  }
+
+  function weekStartDay() {
+    return ["fr", "de", "es", "vi", "ru"].includes(currentUiLanguage()) ? 1 : 0;
   }
 
   function localTodayIso() {
     const now = new Date();
     return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  }
+
+  function addDaysIso(iso, days) {
+    const d = parseIsoDate(iso);
+    if (!d) return "";
+    d.setDate(d.getDate() + days);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
   }
 
   function formatWeekRange(startIso, endIso) {
@@ -518,20 +566,43 @@
   }
 
   function computeGenerateLabel() {
-    const modeLabel =
-      state.config.mode === "draft-update" ? t("generate.draft") : t("generate.finalize");
+    const modeLabel = t("generate.finalize");
     const iso = state.config.targetDate;
     if (!iso) return modeLabel;
     if (iso === localTodayIso()) {
-      return state.config.mode === "draft-update"
-        ? t("generate.todayDraft")
-        : t("generate.todayFinalize");
+      return t("generate.todayFinalize");
     }
     return `${formatShortMonthDay(iso)} ${modeLabel}`;
   }
 
   function isCancellingGeneration() {
     return state.busyKind === "generate" && state.generationProgress?.status === "cancelling";
+  }
+
+  function isGenerationLocked() {
+    return state.busy && state.busyKind === "generate";
+  }
+
+  function isCodexChecking() {
+    return !state.codex.loaded;
+  }
+
+  function needsCodexConnection() {
+    return state.codex.loaded && !state.codex.connected;
+  }
+
+  function canConnectCodex() {
+    return needsCodexConnection() && state.codex.connectable;
+  }
+
+  function generateBlockedByCodex() {
+    return isCodexChecking() || (needsCodexConnection() && !state.codex.connectable);
+  }
+
+  function idleGenerateLabel() {
+    if (isCodexChecking()) return t("status.text.loading");
+    if (needsCodexConnection()) return t("generate.connect");
+    return computeGenerateLabel();
   }
 
   function refreshGenerateLabel() {
@@ -541,30 +612,65 @@
       label.textContent = isCancellingGeneration() ? t("generate.cancelling") : t("generate.cancel");
       return;
     }
-    if (state.busy) return;
-    if (state.codex.loaded && !state.codex.connected) {
-      label.textContent = t("generate.connect");
+    if (state.busy) {
+      label.textContent = state.busyKind === "connect" ? t("status.text.loading") : t("generate.busy");
       return;
     }
-    label.textContent = computeGenerateLabel();
+    label.textContent = idleGenerateLabel();
   }
 
   function syncGenerateButton() {
     const btn = document.querySelector(".cta");
     if (!btn) return;
-    const unavailable = state.codex.loaded && !state.codex.connected;
     const generating = state.busyKind === "generate";
-    btn.disabled = generating ? isCancellingGeneration() : state.busy || unavailable;
+    const blocked = generateBlockedByCodex();
+    btn.disabled = generating ? isCancellingGeneration() : state.busy || blocked;
     btn.classList.toggle("is-cancel", generating);
+    const spinner = btn.querySelector(".spinner");
+    if (spinner) spinner.hidden = !(state.busy && state.busyKind === "generate");
     btn.title = generating
       ? t("generate.cancelTitle")
-      : unavailable
+      : isCodexChecking()
+        ? t("status.detail.wait")
+      : needsCodexConnection()
         ? t("generate.connectTitle")
         : "";
     refreshGenerateLabel();
   }
 
+  function syncMutableControls() {
+    const locked = isGenerationLocked();
+    document
+      .querySelectorAll(
+        [
+          "#date-input",
+          "#output-language",
+          "#diary-length",
+          "#codex-model",
+          "#auto-save",
+          ".side-nav__item",
+          '[data-action="date-prev"]',
+          '[data-action="date-next"]',
+          '[data-action="open-picker"]',
+          '[data-action="jump-today"]',
+          '[data-action="boundary-minus"]',
+          '[data-action="boundary-plus"]',
+          '[data-action="pick-source"]',
+          '[data-action="pick-out"]',
+          '[data-action="toggle-menu"]',
+        ].join(", "),
+      )
+      .forEach((control) => {
+        if (control instanceof HTMLButtonElement || control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
+          control.disabled = locked;
+        }
+      });
+  }
+
   function extractHashtags(structured) {
+    if (Array.isArray(structured?.tags) && structured.tags.length) {
+      return structured.tags.slice(0, 6);
+    }
     const source =
       (structured?.diary || []).join(" ") +
       " " +
@@ -636,21 +742,6 @@
     const style = document.createElement("style");
     style.id = RUNTIME_STYLE_ID;
     style.textContent = `
-      .setting__row--stack {
-        align-items: stretch;
-      }
-
-      .language-select {
-        width: 100%;
-        min-width: 0;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        background: #fff;
-        color: var(--ink);
-        padding: 11px 13px;
-        font-size: 13px;
-      }
-
       .cal-grid {
         gap: 4px;
       }
@@ -750,14 +841,14 @@
     const panel = $("#settings-panel");
     if (!panel || $("#output-language")) return;
     const autoSaveSetting = $("#auto-save") ? $("#auto-save").closest(".setting") : null;
-    const languageSetting = el("label", { class: "setting", dataset: { setting: "output-language" } }, [
+    const languageSetting = el("label", { class: "setting setting--card", dataset: { setting: "output-language" } }, [
       el("span", {}, t("settings.languageLabel")),
-      el("div", { class: "setting__row setting__row--stack" }, [
+      el("div", { class: "setting__field setting__field--select" }, [
         el(
           "select",
           {
             id: "output-language",
-            class: "language-select",
+            class: "select",
             "aria-label": t("settings.languageLabel"),
           },
           OUTPUT_LANGUAGES.map((option) =>
@@ -776,15 +867,15 @@
   function ensureDiaryLengthSetting() {
     const panel = $("#settings-panel");
     if (!panel || $("#diary-length")) return;
-    const modeSetting = document.querySelector('input[name="mode"][value="finalize"]')?.closest(".setting");
-    const lengthSetting = el("label", { class: "setting", dataset: { setting: "diary-length" } }, [
+    const autoSaveSetting = $("#auto-save") ? $("#auto-save").closest(".setting") : null;
+    const lengthSetting = el("label", { class: "setting setting--card", dataset: { setting: "diary-length" } }, [
       el("span", {}, t("settings.lengthLabel")),
-      el("div", { class: "setting__row setting__row--stack" }, [
+      el("div", { class: "setting__field setting__field--select" }, [
         el(
           "select",
           {
             id: "diary-length",
-            class: "language-select",
+            class: "select",
             "aria-label": t("settings.lengthLabel"),
           },
           DIARY_LENGTH_OPTIONS.map((option) =>
@@ -794,8 +885,8 @@
       ]),
       el("span", { class: "setting__hint" }, t("settings.lengthHint")),
     ]);
-    if (modeSetting && modeSetting.parentElement) {
-      modeSetting.parentElement.insertBefore(lengthSetting, modeSetting);
+    if (autoSaveSetting && autoSaveSetting.parentElement) {
+      autoSaveSetting.parentElement.insertBefore(lengthSetting, autoSaveSetting);
     }
     else panel.appendChild(lengthSetting);
   }
@@ -837,12 +928,16 @@
     setText(".side-settings span:last-child", "settings.title");
 
     setTitle('[data-action="date-prev"]', "action.prevDay");
+    setAria('[data-action="date-prev"]', "action.prevDay");
     setTitle('[data-action="date-next"]', "action.nextDay");
+    setAria('[data-action="date-next"]', "action.nextDay");
     setTitle('[data-action="open-picker"]', "action.pickDate");
+    setAria('[data-action="open-picker"]', "action.pickDate");
     setAria("#date-input", "action.pickDate");
     setText(".paper__date-label", "date.label");
     setText('[data-action="jump-today"]', "action.today");
     setTitle('[data-action="toggle-menu"]', "action.more");
+    setAria('[data-action="toggle-menu"]', "action.more");
 
     setText('input[name="view"][value="diary"] + span', "view.diary");
     setText('input[name="view"][value="report"] + span', "view.report");
@@ -856,6 +951,7 @@
     setText(".settings__eyebrow", "settings.eyebrow");
     setText(".settings__title", "settings.title");
     setTitle('#settings-panel [data-action="toggle-settings"]', "action.close");
+    setAria('#settings-panel [data-action="toggle-settings"]', "action.close");
     setAria(".settings__intro", "settings.summaryAria");
     setText(".settings__intro-copy strong", "settings.summaryStrong");
     setText(".settings__intro-copy p", "settings.summaryCopy");
@@ -868,6 +964,8 @@
       const hint = languageSetting.querySelector(".setting__hint");
       if (label) label.textContent = t("settings.languageLabel");
       if (hint) hint.textContent = t("settings.languageHint");
+      const select = languageSetting.querySelector("select");
+      if (select) select.setAttribute("aria-label", t("settings.languageLabel"));
     }
 
     const boundarySetting = $("#boundary-label")?.closest(".setting");
@@ -886,20 +984,11 @@
       if (hint) hint.textContent = t("settings.lengthHint");
       const select = lengthSetting.querySelector("select");
       if (select) {
+        select.setAttribute("aria-label", t("settings.lengthLabel"));
         Array.from(select.options).forEach((optionEl) => {
           optionEl.textContent = t(`length.${optionEl.value}`);
         });
       }
-    }
-
-    const modeSetting = document.querySelector('input[name="mode"][value="finalize"]')?.closest(".setting");
-    if (modeSetting) {
-      const label = modeSetting.querySelector("span");
-      if (label) label.textContent = t("settings.modeLabel");
-      const finalize = modeSetting.querySelector('input[name="mode"][value="finalize"] + span');
-      const draft = modeSetting.querySelector('input[name="mode"][value="draft-update"] + span');
-      if (finalize) finalize.textContent = t("settings.modeFinalize");
-      if (draft) draft.textContent = t("settings.modeDraft");
     }
 
     const autoSaveSetting = $("#auto-save")?.closest(".setting");
@@ -1000,7 +1089,28 @@
     return DIARY_LENGTH_OPTIONS.find((option) => option.key === key) || DIARY_LENGTH_OPTIONS[0];
   }
 
-  function setOutputLanguage(value, { persist = true } = {}) {
+  function normalizeCodexModelKey(value) {
+    if (value === null || value === undefined) return null;
+    const raw = String(value).trim();
+    if (!raw || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$/.test(raw)) return null;
+    return raw;
+  }
+
+  function codexModelOptions() {
+    const current = normalizeCodexModelKey(state.config.codexModel);
+    const known = new Set(CODEX_MODEL_OPTIONS.map((option) => option.key));
+    if (current && !known.has(current)) {
+      return [{ key: current, label: current }, ...CODEX_MODEL_OPTIONS];
+    }
+    return CODEX_MODEL_OPTIONS;
+  }
+
+  function getCodexModelOption(value = state.config.codexModel) {
+    const key = normalizeCodexModelKey(value) || DEFAULT_CODEX_MODEL;
+    return codexModelOptions().find((option) => option.key === key) || { key, label: key };
+  }
+
+  function setOutputLanguage(value, { persist = true, rerender = true } = {}) {
     const option = getOutputLanguageOption(value);
     state.config.outputLanguage = option.key;
     if (persist) {
@@ -1010,7 +1120,7 @@
     applyStaticUiCopy();
     renderConfig();
     renderSideDates();
-    renderStage();
+    if (rerender) renderStage({ preserveScroll: true });
   }
 
   function setDiaryLength(value, { persist = true } = {}) {
@@ -1023,13 +1133,39 @@
     renderConfig();
   }
 
+  function setCodexModel(value, { persist = true } = {}) {
+    const option = getCodexModelOption(value);
+    state.config.codexModel = option.key;
+    if (persist) {
+      writeTextStorage(CODEX_MODEL_KEY, option.key);
+      state.codexModelPinned = true;
+    }
+    renderConfig();
+    syncCodexStatus(state.codex);
+  }
+
   function hydrateClientPreferences() {
     const storedLanguage = normalizeLanguageKey(readTextStorage(OUTPUT_LANGUAGE_KEY));
     const storedLength = normalizeDiaryLengthKey(readTextStorage(DIARY_LENGTH_KEY));
+    const storedCodexModel = normalizeCodexModelKey(readTextStorage(CODEX_MODEL_KEY));
+    const storedBoundary = Number(readTextStorage(BOUNDARY_HOUR_KEY));
+    const storedAutoSave = readTextStorage(AUTO_SAVE_KEY);
+    const storedSourceDir = readTextStorage(SOURCE_DIR_KEY).trim();
+    const storedOutDir = readTextStorage(OUT_DIR_KEY).trim();
     state.languagePinned = Boolean(storedLanguage);
     state.diaryLengthPinned = Boolean(storedLength);
+    state.codexModelPinned = Boolean(storedCodexModel);
+    state.boundaryPinned = Number.isInteger(storedBoundary) && storedBoundary >= 0 && storedBoundary <= 23;
+    state.autoSavePinned = storedAutoSave === "true" || storedAutoSave === "false";
+    state.sourceDirPinned = Boolean(storedSourceDir);
+    state.outDirPinned = Boolean(storedOutDir);
     state.config.outputLanguage = storedLanguage || DEFAULT_OUTPUT_LANGUAGE;
     state.config.diaryLength = storedLength || DIARY_LENGTH_OPTIONS[0].key;
+    state.config.codexModel = storedCodexModel || DEFAULT_CODEX_MODEL;
+    if (state.boundaryPinned) state.config.boundaryHour = storedBoundary;
+    if (state.autoSavePinned) state.config.autoSave = storedAutoSave === "true";
+    if (state.sourceDirPinned) state.config.sourceDir = storedSourceDir;
+    if (state.outDirPinned) state.config.outDir = storedOutDir;
   }
 
   function currentLanguagePayload() {
@@ -1116,35 +1252,121 @@
     writeStorage(MEMO_KEY, all);
   }
 
+  function normalizeTodoText(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
+  }
+
+  function stableTodoId(fromIso, text) {
+    const raw = `${fromIso || "unknown"}:${normalizeTodoText(text).toLowerCase()}`;
+    return `todo-${Math.abs(hashIso(raw)).toString(36)}`;
+  }
+
+  function normalizeCarryoverTodo(todo, fallbackFromIso = "") {
+    const text = normalizeTodoText(typeof todo === "string" ? todo : todo?.text);
+    if (!text) return null;
+    const fromIso = typeof todo === "object" && todo?.fromIso ? todo.fromIso : fallbackFromIso;
+    return {
+      id: typeof todo === "object" && todo?.id ? String(todo.id) : stableTodoId(fromIso, text),
+      text,
+      fromIso,
+      done: Boolean(typeof todo === "object" && todo?.done),
+      createdAt: typeof todo === "object" && todo?.createdAt ? String(todo.createdAt) : "",
+    };
+  }
+
+  function getCarryoverTodos(iso) {
+    if (!iso) return [];
+    const all = readStorage(CARRYOVER_TODO_KEY);
+    const raw = Array.isArray(all[iso]) ? all[iso] : [];
+    return raw.map((item) => normalizeCarryoverTodo(item)).filter(Boolean);
+  }
+
+  function setCarryoverTodos(iso, todos) {
+    if (!iso) return;
+    const all = readStorage(CARRYOVER_TODO_KEY);
+    const cleaned = (todos || []).map((item) => normalizeCarryoverTodo(item)).filter(Boolean);
+    if (cleaned.length) all[iso] = cleaned;
+    else delete all[iso];
+    writeStorage(CARRYOVER_TODO_KEY, all);
+  }
+
+  function hasCarryoverTodo(iso, text) {
+    const normalized = normalizeTodoText(text).toLowerCase();
+    if (!normalized) return false;
+    return getCarryoverTodos(iso).some((todo) => todo.text.toLowerCase() === normalized);
+  }
+
+  function addCarryoverTodo(fromIso, text) {
+    const normalized = normalizeTodoText(text);
+    const targetIso = addDaysIso(fromIso, 1);
+    if (!targetIso || !normalized) return { added: false, targetIso };
+    const todos = getCarryoverTodos(targetIso);
+    if (todos.some((todo) => todo.text.toLowerCase() === normalized.toLowerCase())) {
+      return { added: false, targetIso };
+    }
+    todos.push({
+      id: stableTodoId(fromIso, normalized),
+      text: normalized,
+      fromIso,
+      done: false,
+      createdAt: new Date().toISOString(),
+    });
+    setCarryoverTodos(targetIso, todos);
+    return { added: true, targetIso };
+  }
+
+  function toggleCarryoverTodo(iso, todoId) {
+    const todos = getCarryoverTodos(iso);
+    const next = todos.map((todo) =>
+      todo.id === todoId ? { ...todo, done: !todo.done } : todo,
+    );
+    setCarryoverTodos(iso, next);
+  }
+
   /* Stage --------------------------------------------------------------- */
-  function renderStage() {
+  function renderStage(options = {}) {
     const stage = $("#stage");
+    if (!stage) return;
+    const renderId = (state.stageRenderId += 1);
+    const preserveScroll = Boolean(options.preserveScroll);
+    const previousScrollTop = preserveScroll ? stage.scrollTop : 0;
+    const finish = (node) => {
+      if (node) stage.appendChild(node);
+      if (preserveScroll) {
+        requestAnimationFrame(() => {
+          if (renderId !== state.stageRenderId) return;
+          const maxScroll = Math.max(0, stage.scrollHeight - stage.clientHeight);
+          stage.scrollTop = Math.min(previousScrollTop, maxScroll);
+        });
+      } else {
+        stage.scrollTop = 0;
+        requestAnimationFrame(() => {
+          if (renderId !== state.stageRenderId) return;
+          stage.scrollTop = 0;
+        });
+      }
+    };
     if (state.menuOpen) toggleMenu(false);
     stage.innerHTML = "";
 
     if (state.busy && state.busyKind === "generate") {
-      stage.appendChild(renderLoadingStage());
-      return;
+      return finish(renderLoadingStage());
     }
 
     if (state.nav === "calendar") {
-      stage.appendChild(renderCalendar());
-      return;
+      return finish(renderCalendar());
     }
 
     if (state.nav === "archive") {
-      stage.appendChild(renderArchive());
-      return;
+      return finish(renderArchive());
     }
 
     if (state.codex.loaded && !state.codex.connected && !state.data) {
-      stage.appendChild(renderConnectionPrompt());
-      return;
+      return finish(renderConnectionPrompt());
     }
 
     if (!state.data) {
-      stage.appendChild(renderEmpty());
-      return;
+      return finish(renderEmpty());
     }
 
     const payload = state.data;
@@ -1152,30 +1374,29 @@
     const viewKey = state.view;
 
     if (viewKey === "raw") {
-      stage.appendChild(renderRaw(payload.views_html?.full || ""));
-      return;
+      return finish(renderRaw(payload.views_html?.full || ""));
     }
 
     if (viewKey === "report") {
       if (structured?.has_report) {
-        stage.appendChild(renderReport(structured.report));
+        finish(renderReport(structured.report, payload?.target_date));
       } else if (payload.views_html?.report) {
-        stage.appendChild(renderRaw(payload.views_html.report));
+        finish(renderRaw(payload.views_html.report));
       } else {
-        stage.appendChild(renderViewEmpty(t("empty.report")));
+        finish(renderViewEmpty(t("empty.report")));
       }
       return;
     }
 
     // diary (default)
     if (structured?.has_diary) {
-      stage.appendChild(renderDiary(structured, payload));
+      finish(renderDiary(structured, payload));
     } else if (payload.views_html?.diary) {
-      stage.appendChild(renderRaw(payload.views_html.diary));
+      finish(renderRaw(payload.views_html.diary));
     } else if (payload.views_html?.full) {
-      stage.appendChild(renderRaw(payload.views_html.full));
+      finish(renderRaw(payload.views_html.full));
     } else {
-      stage.appendChild(renderViewEmpty(t("empty.diary")));
+      finish(renderViewEmpty(t("empty.diary")));
     }
   }
 
@@ -1196,13 +1417,81 @@
       ? t("empty.copyWithDate", { language: displayLanguageLabel() })
       : t("empty.copyToday");
 
-    return el("section", { class: "empty" }, [
+    const empty = el("section", { class: "empty" }, [
       mascot,
       el("h2", { class: "empty__title" }, [
         document.createTextNode(title),
         el("span", { class: "empty__heart" }, " ♡"),
       ]),
       el("p", { class: "empty__copy" }, copy),
+    ]);
+    const carryover = renderCarryoverTodoCard(iso, { compact: true });
+    const readiness = renderReadinessCard();
+    const blocks = [empty, readiness, carryover].filter(Boolean);
+    return blocks.length > 1 ? el("div", { class: "empty-stack" }, blocks) : empty;
+  }
+
+  function compactPath(path) {
+    if (!path) return t("path.default");
+    return String(path).replace(/^\/Users\/[^/]+/, "~");
+  }
+
+  function readinessRow({ state: rowState, label, value }) {
+    return el("div", { class: `readiness__row is-${rowState}` }, [
+      el("span", { class: "readiness__dot" }),
+      el("span", { class: "readiness__label" }, label),
+      el("span", { class: "readiness__value" }, value),
+    ]);
+  }
+
+  function renderReadinessCard() {
+    const readiness = state.readiness || {};
+    const readinessLoaded = Boolean(readiness.loaded);
+    const sourceDir = readiness.sourceDir || state.config.sourceDir;
+    const outDir = readiness.outDir || state.config.outDir;
+    const sourceCount =
+      Number.isFinite(readiness.sourceMarkdownCount) ? readiness.sourceMarkdownCount : null;
+    const sourceOk = readinessLoaded && Boolean(readiness.sourceExists) && (sourceCount === null || sourceCount > 0);
+    const outputOk = readinessLoaded && Boolean(readiness.outExists);
+    const sourceValue = !readinessLoaded
+      ? t("status.text.loading")
+      : !readiness.sourceExists
+        ? t("readiness.sourceMissing")
+      : sourceCount === 0
+        ? `${compactPath(sourceDir)} · ${t("readiness.sourceEmpty")}`
+      : `${compactPath(sourceDir)}${
+        sourceCount === null ? "" : ` · ${t("readiness.sourceCount", { count: sourceCount })}`
+      }`;
+    const codexState = state.codex.connected ? "ok" : isCodexChecking() ? "pending" : "warn";
+    const codexValue = state.codex.connected
+      ? (state.codex.detail || t("status.detail.connected"))
+      : isCodexChecking()
+        ? t("status.text.loading")
+        : (state.codex.detail || t("status.detail.login"));
+
+    return el("section", { class: "readiness", "aria-label": t("readiness.title") }, [
+      el("div", { class: "readiness__title" }, t("readiness.title")),
+      el("div", { class: "readiness__notice" }, [
+        el("strong", {}, t("readiness.prereqTitle")),
+        el("span", {}, t("readiness.prereqBody")),
+      ]),
+      readinessRow({
+        state: codexState,
+        label: "Codex",
+        value: codexValue,
+      }),
+      readinessRow({
+        state: !readinessLoaded ? "pending" : sourceOk ? "ok" : "warn",
+        label: t("settings.sourceLabel"),
+        value: sourceValue,
+      }),
+      readinessRow({
+        state: !readinessLoaded ? "pending" : outputOk ? "ok" : "pending",
+        label: t("settings.outputLabel"),
+        value: !readinessLoaded ? t("status.text.loading") : `${compactPath(outDir)} · ${
+          outputOk ? t("readiness.outputReady") : t("readiness.outputMissing")
+        }`,
+      }),
     ]);
   }
 
@@ -1214,7 +1503,7 @@
       ? t("loading.titleWithDate", { date: formatDisplayDate(iso) })
       : t("loading.titleToday");
     const snapshot = currentLoadingSnapshot();
-    const { elapsedSeconds, phaseIndex, phase } = snapshot;
+    const { elapsedSeconds, phase } = snapshot;
 
     const mascot = el("div", { class: "loading-card__art", "aria-hidden": "true" });
     const glow = el("div", { class: "loading-card__glow" });
@@ -1226,21 +1515,6 @@
     ["1", "2", "3", "4"].forEach((index) =>
       mascot.appendChild(el("span", { class: `loading-card__spark loading-card__spark--${index}` })),
     );
-
-    const stepList = el("ol", { class: "loading-steps" });
-    LOADING_PHASES.forEach((step, index) => {
-      const stateClass =
-        index < phaseIndex ? "is-done" : index === phaseIndex ? "is-active" : "";
-      stepList.appendChild(
-        el("li", { class: `loading-step ${stateClass}`.trim(), dataset: { loadingStep: String(index) } }, [
-          el("span", { class: "loading-step__badge", "data-loading-badge": "true" }, index < phaseIndex ? "✓" : `${index + 1}`),
-          el("div", { class: "loading-step__copy" }, [
-            el("div", { class: "loading-step__title" }, loadingStepTitle(step)),
-            el("div", { class: "loading-step__detail", "data-loading-step-detail": "true" }, loadingStepDetail(step, index, snapshot)),
-          ]),
-        ]),
-      );
-    });
 
     const meterAttrs = {
       class: "loading-card__meter",
@@ -1265,7 +1539,6 @@
           el("span", { class: "loading-card__elapsed", "data-loading-elapsed": "true" }, t("loading.elapsed", { seconds: elapsedSeconds })),
           el("span", { class: "loading-card__meta", "data-loading-meta": "true", hidden: !loadingMetaText(snapshot) }, loadingMetaText(snapshot)),
         ]),
-        stepList,
       ]),
       mascot,
     ]);
@@ -1318,6 +1591,7 @@
       body,
       renderHashtagRow(structured),
       renderSummaryCard(structured),
+      renderCarryoverTodoCard(iso),
       renderMemoCard(iso),
       renderDiaryFoot(payload),
     ]);
@@ -1340,7 +1614,7 @@
             const next = current === opt.key ? null : opt.key;
             setMood(iso, next);
             renderSideDates();
-            renderStage();
+            renderStage({ preserveScroll: true });
           },
         },
         opt.emoji,
@@ -1408,17 +1682,18 @@
 
   function renderDiaryFoot(payload) {
     const saved = payload?.saved_path ? t("foot.saved") : t("foot.preview");
-    const mode = payload?.mode === "finalize" ? t("foot.modeFinalize") : t("foot.modeDraft");
-    const time = new Date().toLocaleTimeString(currentUiLocale(), {
+    const timestamp = payload?.saved_mtime ? new Date(payload.saved_mtime) : new Date();
+    const time = timestamp.toLocaleTimeString(currentUiLocale(), {
       hour: "2-digit",
       minute: "2-digit",
     });
-    return el("div", { class: "diary__foot" }, `${t("foot.writtenAt")} · ${time} · ${mode} · ${saved}`);
+    return el("div", { class: "diary__foot" }, `${t("foot.writtenAt")} · ${time} · ${saved}`);
   }
 
   /* Report view --------------------------------------------------------- */
-  function renderReport(report) {
+  function renderReport(report, reportIso = null) {
     const container = el("section", { class: "report" });
+    const iso = reportIso || state.selectedDateIso || state.config.targetDate;
 
     if (report.today) {
       container.appendChild(
@@ -1462,11 +1737,11 @@
     if (report.tomorrow?.length) {
       container.appendChild(
         reportCard({
-          icon: "→",
+          icon: assetImg("assets/todo-carry.png", "card__badge-img"),
           tone: "warm",
           title: t("report.tomorrow"),
           subtitle: t("saved.records", { count: report.tomorrow.length }),
-          body: renderTodoList(report.tomorrow),
+          body: renderTodoList(report.tomorrow, { carryForward: true, sourceIso: iso }),
         }),
       );
     }
@@ -1498,13 +1773,93 @@
     return ul;
   }
 
-  function renderTodoList(items) {
+  function assetImg(src, className, alt = "") {
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = alt;
+    img.className = className;
+    return img;
+  }
+
+  function renderCarryoverTodoCard(iso, { compact = false } = {}) {
+    const todos = getCarryoverTodos(iso);
+    if (!todos.length) return null;
+    const list = el("ul", { class: "carryover__list" });
+    todos.forEach((todo) => {
+      const btn = el(
+        "button",
+        {
+          type: "button",
+          class: `carryover__check ${todo.done ? "is-done" : ""}`,
+          "aria-pressed": todo.done ? "true" : "false",
+          title: todo.done ? t("todo.markOpen") : t("todo.markDone"),
+          "aria-label": todo.done ? t("todo.markOpen") : t("todo.markDone"),
+          onClick: () => {
+            toggleCarryoverTodo(iso, todo.id);
+            renderStage({ preserveScroll: true });
+            showToast(t("toast.todoUpdated"));
+          },
+        },
+        todo.done ? "✓" : "",
+      );
+      list.appendChild(
+        el("li", { class: `carryover__item ${todo.done ? "is-done" : ""}`.trim() }, [
+          btn,
+          el("div", { class: "carryover__text" }, [
+            el("span", {}, todo.text),
+            todo.fromIso
+              ? el("small", {}, t("carryover.from", { date: formatDisplayDate(todo.fromIso) }))
+              : null,
+          ]),
+        ]),
+      );
+    });
+
+    return el("section", { class: `carryover ${compact ? "carryover--compact" : ""}`.trim() }, [
+      el("header", { class: "carryover__head" }, [
+        assetImg("assets/todo-carry.png", "carryover__icon"),
+        el("div", {}, [
+          el("div", { class: "carryover__title" }, t("carryover.title")),
+          el("div", { class: "carryover__subtitle" }, t("carryover.subtitle", { count: todos.length })),
+        ]),
+      ]),
+      list,
+    ]);
+  }
+
+  function renderTodoList(items, { carryForward = false, sourceIso = null } = {}) {
     const ul = el("ul", { class: "todo-list" });
-    items.forEach((item) =>
+    const targetIso = sourceIso ? addDaysIso(sourceIso, 1) : "";
+    items.forEach((rawItem) => {
+      const item = normalizeTodoText(rawItem);
+      if (!item) return;
+      const carried = carryForward && targetIso && hasCarryoverTodo(targetIso, item);
+      const check = carryForward
+        ? el(
+            "button",
+            {
+              type: "button",
+              class: `todo-check todo-check--action ${carried ? "is-carried" : ""}`.trim(),
+              "aria-pressed": carried ? "true" : "false",
+              title: carried ? t("todo.carriedForward") : t("todo.carryForward"),
+              "aria-label": carried ? t("todo.carriedForward") : t("todo.carryForward"),
+              onClick: () => {
+                const result = addCarryoverTodo(sourceIso, item);
+                renderStage({ preserveScroll: true });
+                showToast(
+                  result.added
+                    ? t("toast.todoCarried", { date: formatDisplayDate(result.targetIso) })
+                    : t("toast.todoAlreadyCarried", { date: formatDisplayDate(result.targetIso) }),
+                );
+              },
+            },
+            carried ? "✓" : "",
+          )
+        : el("span", { class: "todo-check" });
       ul.appendChild(
-        el("li", {}, [el("span", { class: "todo-check" }), el("span", {}, item)]),
-      ),
-    );
+        el("li", { class: carried ? "is-carried" : "" }, [check, el("span", { class: "todo-text" }, item)]),
+      );
+    });
     return ul;
   }
 
@@ -1530,7 +1885,7 @@
             class: "card__action timeline-toggle",
             onClick: () => {
               state.timelineVisibleCount = Math.min(total, visibleCount + TIMELINE_STEP);
-              renderStage();
+              renderStage({ preserveScroll: true });
             },
           },
           t("timeline.more", { count: step }),
@@ -1544,10 +1899,10 @@
               type: "button",
               class: "card__action timeline-toggle",
               onClick: () => {
-              state.timelineVisibleCount = total;
-              renderStage();
+                state.timelineVisibleCount = total;
+                renderStage({ preserveScroll: true });
+              },
             },
-          },
             t("timeline.all", { count: total }),
           ),
         );
@@ -1562,7 +1917,7 @@
             class: "card__action timeline-toggle timeline-toggle--ghost",
             onClick: () => {
               state.timelineVisibleCount = TIMELINE_PREVIEW;
-              renderStage();
+              renderStage({ preserveScroll: true });
             },
           },
           t("timeline.collapse"),
@@ -1687,7 +2042,7 @@
 
     const grid = el("div", { class: "cal-grid" });
     const firstDay = new Date(cursor.year, cursor.month, 1);
-    const leadingBlanks = firstDay.getDay(); // 0=Sun
+    const leadingBlanks = (firstDay.getDay() - weekStartDay() + 7) % 7;
     const daysInMonth = new Date(cursor.year, cursor.month + 1, 0).getDate();
 
     for (let i = 0; i < leadingBlanks; i += 1) {
@@ -1727,8 +2082,10 @@
                 state.selectedDateIso = iso;
                 state.selectedWeekStart = null;
                 state.view = "diary";
+                state.nav = "diary";
                 state.config.targetDate = iso;
                 setCalendarCursor(iso);
+                setNavActive();
                 renderConfig();
                 renderSideDates();
                 renderStage();
@@ -1751,6 +2108,10 @@
           ],
         ),
       );
+    }
+    const renderedCells = leadingBlanks + daysInMonth;
+    for (let i = renderedCells; i < 42; i += 1) {
+      grid.appendChild(el("div", { class: "cal-cell cal-cell--blank" }));
     }
 
     root.appendChild(grid);
@@ -1815,7 +2176,7 @@
         el("div", { class: "archive__empty" }, t("archive.emptyDaily")),
       );
     } else {
-      state.dates.slice(0, 18).forEach((item) => {
+      state.dates.forEach((item) => {
         const active = item.date === state.selectedDateIso;
         const meta = dateVisualMeta(item.date, { saved: true });
         dailyList.appendChild(
@@ -1861,7 +2222,7 @@
         el("div", { class: "archive__empty" }, t("archive.emptyWeekly")),
       );
     } else {
-      state.weeks.slice(0, 12).forEach((week) => {
+      state.weeks.forEach((week) => {
         const active = week.start === state.selectedWeekStart;
         weekList.appendChild(
           el(
@@ -2028,11 +2389,6 @@
       outEl.title = state.config.outDir || "";
     }
 
-    const modeRadio = document.querySelector(
-      `input[name="mode"][value="${state.config.mode}"]`,
-    );
-    if (modeRadio) modeRadio.checked = true;
-
     const autoSave = $("#auto-save");
     if (autoSave) autoSave.checked = state.config.autoSave;
 
@@ -2051,6 +2407,15 @@
       });
       lengthSelect.value = getDiaryLengthOption().key;
     }
+    const modelSelect = $("#codex-model");
+    if (modelSelect) {
+      const options = codexModelOptions();
+      modelSelect.replaceChildren(
+        ...options.map((option) => el("option", { value: option.key }, option.label || option.key)),
+      );
+      modelSelect.value = getCodexModelOption().key;
+      modelSelect.setAttribute("aria-label", t("status.modelLabel"));
+    }
     const viewSegmented = $("#view-segmented");
     if (viewSegmented) {
       const hiddenOutsideDiary = state.nav !== "diary";
@@ -2066,15 +2431,16 @@
     }
     renderCodexStatus();
     syncGenerateButton();
+    syncMutableControls();
   }
 
   function syncConfig(config) {
     if (!config) return;
     if (config.target_date) state.config.targetDate = config.target_date;
-    if (typeof config.boundary_hour === "number")
+    if (typeof config.boundary_hour === "number" && !state.boundaryPinned)
       state.config.boundaryHour = config.boundary_hour;
-    if (typeof config.source_dir === "string") state.config.sourceDir = config.source_dir;
-    if (typeof config.out_dir === "string") state.config.outDir = config.out_dir;
+    if (typeof config.source_dir === "string" && !state.sourceDirPinned) state.config.sourceDir = config.source_dir;
+    if (typeof config.out_dir === "string" && !state.outDirPinned) state.config.outDir = config.out_dir;
     const language =
       normalizeLanguageKey(config.output_language_code) ||
       normalizeLanguageKey(config.target_language_code) ||
@@ -2090,6 +2456,11 @@
       normalizeDiaryLengthKey(config.diary_length) ||
       normalizeDiaryLengthKey(config.length);
     if (diaryLength && !state.diaryLengthPinned) state.config.diaryLength = diaryLength;
+    const codexModel =
+      normalizeCodexModelKey(config.codex_model) ||
+      normalizeCodexModelKey(config.selected_model) ||
+      normalizeCodexModelKey(config.configured_model);
+    if (codexModel && !state.codexModelPinned) state.config.codexModel = codexModel;
     renderConfig();
   }
 
@@ -2113,6 +2484,20 @@
     }
   }
 
+  function syncReadiness(readiness) {
+    if (!readiness || typeof readiness !== "object") return;
+    state.readiness = {
+      loaded: true,
+      sourceDir: readiness.source_dir || state.config.sourceDir || "",
+      sourceExists: Boolean(readiness.source_exists),
+      sourceMarkdownCount: Number.isFinite(readiness.source_markdown_count)
+        ? readiness.source_markdown_count
+        : null,
+      outDir: readiness.out_dir || state.config.outDir || "",
+      outExists: Boolean(readiness.out_exists),
+    };
+  }
+
   function syncCodexStatus(codex) {
     if (!codex) return;
     state.codex = {
@@ -2122,8 +2507,13 @@
       connectable: Boolean(codex.connectable),
       message: codex.message || "",
       detail: codex.detail || "",
+      configuredModel: normalizeCodexModelKey(codex.configured_model) || "",
+      selectedModel: normalizeCodexModelKey(codex.selected_model) || state.config.codexModel,
     };
-    renderCodexStatus();
+    if (!state.codexModelPinned && state.codex.selectedModel) {
+      state.config.codexModel = state.codex.selectedModel;
+    }
+    renderConfig();
     syncGenerateButton();
   }
 
@@ -2147,9 +2537,9 @@
     }
 
     const detailText = connected
-      ? t("status.detail.connected")
+      ? (codex.detail || t("status.detail.connected"))
       : loaded
-        ? t("status.detail.login")
+        ? (codex.detail || t("status.detail.login"))
         : t("status.detail.wait");
     host.title = detailText;
 
@@ -2164,6 +2554,14 @@
           : t("status.text.loading");
     }
 
+    const modelSelect = host.querySelector("#codex-model");
+    if (modelSelect) {
+      modelSelect.disabled = state.busy || !loaded;
+      modelSelect.title = detailText;
+      modelSelect.setAttribute("aria-label", t("status.modelLabel"));
+      modelSelect.value = getCodexModelOption().key;
+    }
+
     const detail = host.querySelector(".bridge-status__detail");
     if (detail) {
       detail.textContent = detailText;
@@ -2176,7 +2574,7 @@
       } else {
         action.hidden = false;
         action.textContent = connectable ? t("status.action.connect") : t("status.action.check");
-        action.disabled = state.busy || !connectable;
+        action.disabled = state.busy;
       }
     }
   }
@@ -2194,7 +2592,7 @@
       el("p", { class: "empty__copy" }, body),
     ];
 
-    if (codex.connectable) {
+    if (codex.loaded) {
       content.push(
         el(
           "button",
@@ -2202,13 +2600,17 @@
             type: "button",
             class: "empty__action",
             "data-action": "codex-connect",
+            disabled: state.busy,
           },
           actionLabel,
         ),
       );
     }
 
-    return el("section", { class: "empty empty--connection" }, content);
+    return el("div", { class: "empty-stack" }, [
+      el("section", { class: "empty empty--connection" }, content),
+      renderReadinessCard(),
+    ]);
   }
 
   function showToast(text) {
@@ -2216,40 +2618,27 @@
     if (!toast) {
       toast = document.createElement("div");
       toast.className = "toast";
+      toast.setAttribute("role", "status");
+      toast.setAttribute("aria-live", "polite");
       document.body.appendChild(toast);
     }
     toast.textContent = text;
     toast.classList.add("is-visible");
     clearTimeout(showToast._t);
-    showToast._t = setTimeout(() => toast.classList.remove("is-visible"), 1600);
+    const duration = clamp(1800 + String(text || "").length * 45, 2200, 5200);
+    showToast._t = setTimeout(() => toast.classList.remove("is-visible"), duration);
   }
 
   function setBusy(busy, kind = null) {
     const previousKind = state.busyKind;
     state.busy = busy;
     state.busyKind = busy ? kind || state.busyKind : null;
-    const btn = document.querySelector(".cta");
-    if (btn) {
-      const generating = state.busyKind === "generate";
-      btn.disabled = generating
-        ? isCancellingGeneration()
-        : busy || (state.codex.loaded && !state.codex.connected);
-      btn.classList.toggle("is-cancel", generating);
-      const spinner = btn.querySelector(".spinner");
-      const label = btn.querySelector(".cta__label");
-      if (spinner) spinner.hidden = !(busy && state.busyKind === "generate");
-      if (label) {
-        label.textContent = generating
-          ? isCancellingGeneration()
-            ? t("generate.cancelling")
-            : t("generate.cancel")
-          : busy
-            ? t("generate.busy")
-          : state.codex.loaded && !state.codex.connected
-            ? t("generate.connect")
-            : computeGenerateLabel();
-      }
+    if (state.busyKind === "generate") {
+      toggleSettings(false);
+      toggleMenu(false);
     }
+    syncGenerateButton();
+    syncMutableControls();
     if (state.busy && state.busyKind === "generate") {
       renderStage();
       startLoadingPulse();
@@ -2266,18 +2655,26 @@
   }
 
   /* Actions ------------------------------------------------------------- */
-  function withTimeout(promise, ms) {
+  function withTimeout(promise, ms, onTimeout) {
     let timeoutId;
     const timer = new Promise((_, reject) => {
       timeoutId = setTimeout(
-        () =>
+        async () => {
+          if (onTimeout) {
+            try {
+              await onTimeout();
+            } catch {
+              // The original timeout message is more useful to the user here.
+            }
+          }
           reject(
             new Error(
               t("warning.timeout", {
                 seconds: Math.round(ms / 1000),
               }),
             ),
-          ),
+          );
+        },
         ms,
       );
     });
@@ -2307,18 +2704,29 @@
       await cancelGeneration();
       return;
     }
-    if (state.codex.loaded && !state.codex.connected) {
+    if (isCodexChecking()) {
+      setFooter(t("status.text.loading"));
+      setWarning("");
+      return;
+    }
+    if (needsCodexConnection()) {
       state.data = null;
       renderStage();
+      if (canConnectCodex()) {
+        await connectCodex();
+        return;
+      }
       setFooter(t("footer.connectFirst"));
       setWarning(t("connect.title"));
       return;
     }
     if (state.busy) return;
     const language = getOutputLanguageOption();
+    const requestOutDir = state.config.outDir;
     state.generationMeta = {
       targetDate: state.config.targetDate,
       languageKey: language.key,
+      diaryLengthKey: state.config.diaryLength,
       startedAt: Date.now(),
     };
     syncGenerationProgress(null);
@@ -2327,19 +2735,17 @@
     setFooter(t("footer.generating", { language: displayLanguageLabel(language.key) }));
     setWarning("");
     try {
-      const payload = await withTimeout(
-        bridge.generate({
+      const payload = await bridge.generate({
           target_date: state.config.targetDate,
           boundary_hour: state.config.boundaryHour,
           mode: state.config.mode,
           source_dir: state.config.sourceDir,
-          out_dir: state.config.outDir,
+          out_dir: requestOutDir,
           auto_save: state.config.autoSave,
           diary_length_code: state.config.diaryLength,
+          codex_model: state.config.codexModel,
           ...currentLanguagePayload(),
-        }),
-        GENERATION_REQUEST_TIMEOUT_MS,
-      );
+        });
       if (payload?.cancelled) {
         syncGenerationProgress(payload.progress);
         setFooter(t("footer.cancelled"));
@@ -2363,6 +2769,7 @@
       state.timelineVisibleCount = TIMELINE_PREVIEW;
       setCalendarCursor(payload.target_date);
       if (payload.diary_length_code) state.config.diaryLength = payload.diary_length_code;
+      if (payload.codex_model) state.config.codexModel = payload.codex_model;
       renderConfig();
       setNavActive();
       syncSegmented();
@@ -2375,7 +2782,8 @@
         }),
       );
       if (payload.warnings?.length) setWarning(payload.warnings.join(" · "));
-      refreshLists();
+      refreshLists(requestOutDir);
+      refreshReadiness();
     } catch (err) {
       setFooter(t("footer.generateFailed"));
       setWarning(String(err && err.message ? err.message : err));
@@ -2390,19 +2798,20 @@
       setWarning(t("warning.webview"));
       return;
     }
+    if (state.busy) return;
     if (!state.codex.loaded || !state.codex.connected) {
       setFooter(t("status.text.loading"));
     }
     setBusy(true, "connect");
     try {
       const payload = await bridge.connect_codex();
+      if (payload?.codex) {
+        syncCodexStatus(payload.codex);
+      }
       if (payload?.error) {
         setWarning(payload.error);
         setFooter(t("footer.connectFailed"));
         return;
-      }
-      if (payload?.codex) {
-        syncCodexStatus(payload.codex);
       }
       if (payload?.connected && payload?.codex?.connected) {
         setFooter(t("footer.connected"));
@@ -2423,6 +2832,7 @@
   }
 
   function showEmptyDateState(iso, reasonText = "") {
+    state.viewRequestId += 1;
     state.data = null;
     state.selectedDateIso = iso || null;
     state.selectedWeekStart = null;
@@ -2455,8 +2865,10 @@
     const { clearOnMissing = false } = options;
     const bridge = api();
     if (!bridge) return;
+    const requestId = (state.viewRequestId += 1);
     try {
       const payload = await bridge.load_date(iso, state.config.outDir);
+      if (requestId !== state.viewRequestId) return;
       if (payload?.error) {
         state.config.targetDate = iso;
         if (clearOnMissing) {
@@ -2470,6 +2882,9 @@
         );
         setWarning(payload.error);
         return;
+      }
+      if (payload.output_language_code) {
+        setOutputLanguage(payload.output_language_code, { persist: false, rerender: false });
       }
       state.data = payload;
       state.selectedDateIso = iso;
@@ -2491,6 +2906,7 @@
       );
       setWarning("");
     } catch (err) {
+      if (requestId !== state.viewRequestId) return;
       setWarning(String(err));
     }
   }
@@ -2498,14 +2914,20 @@
   function syncTargetDateView() {
     if (!state.config.targetDate) return;
     setCalendarCursor(state.config.targetDate);
+    if (!api()) {
+      showEmptyDateState(state.config.targetDate);
+      return;
+    }
     openDate(state.config.targetDate, { clearOnMissing: true });
   }
 
   async function openWeek(iso) {
     const bridge = api();
     if (!bridge) return;
+    const requestId = (state.viewRequestId += 1);
     try {
       const payload = await bridge.load_week(iso, state.config.outDir, currentUiLanguage());
+      if (requestId !== state.viewRequestId) return;
       if (payload?.error) {
         setFooter(t("footer.openWeekFailed"));
         setWarning(payload.error);
@@ -2531,15 +2953,16 @@
       );
       setWarning("");
     } catch (err) {
+      if (requestId !== state.viewRequestId) return;
       setWarning(String(err));
     }
   }
 
-  async function refreshLists() {
+  async function refreshLists(outDir = state.config.outDir) {
     const bridge = api();
     if (!bridge) return;
     try {
-      const entries = await bridge.list_entries(state.config.outDir);
+      const entries = await bridge.list_entries(outDir);
       state.dates = entries.dates || [];
       state.weeks = entries.weeks || [];
       renderSideDates();
@@ -2549,7 +2972,19 @@
     }
   }
 
+  async function refreshReadiness({ rerender = false } = {}) {
+    const bridge = api();
+    if (!bridge || !bridge.readiness) return;
+    try {
+      syncReadiness(await bridge.readiness(state.config.sourceDir, state.config.outDir));
+      if (rerender && !state.data) renderStage({ preserveScroll: true });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   async function pickFolder(kind) {
+    if (isGenerationLocked()) return;
     const bridge = api();
     if (!bridge) return;
     toggleMenu(false);
@@ -2558,8 +2993,15 @@
     if (!picked) return;
     if (kind === "source") state.config.sourceDir = picked;
     else state.config.outDir = picked;
+    writeTextStorage(kind === "source" ? SOURCE_DIR_KEY : OUT_DIR_KEY, picked);
+    if (kind === "source") state.sourceDirPinned = true;
+    else state.outDirPinned = true;
     renderConfig();
-    refreshLists();
+    await refreshReadiness({ rerender: true });
+    await refreshLists();
+    if (kind === "out" && state.config.targetDate) {
+      syncTargetDateView();
+    }
     showToast(kind === "source" ? t("toast.sourceChanged") : t("toast.outputChanged"));
   }
 
@@ -2581,8 +3023,8 @@
     } catch {
       const bridge = api();
       if (bridge) {
-        await bridge.copy_to_clipboard(text);
-        showToast(t("toast.copied"));
+        const copied = await bridge.copy_to_clipboard(text);
+        showToast(copied ? t("toast.copied") : t("toast.copyFailed"));
       } else {
         showToast(t("toast.copyFailed"));
       }
@@ -2611,6 +3053,7 @@
 
   /* Date helpers -------------------------------------------------------- */
   function shiftDate(days) {
+    if (isGenerationLocked()) return;
     if (!state.config.targetDate) return;
     const d = new Date(`${state.config.targetDate}T12:00:00`);
     d.setDate(d.getDate() + days);
@@ -2621,6 +3064,7 @@
   }
 
   async function jumpToday() {
+    if (isGenerationLocked()) return;
     const bridge = api();
     if (!bridge) return;
     try {
@@ -2637,14 +3081,20 @@
   }
 
   function shiftBoundary(delta) {
+    if (isGenerationLocked()) return;
     const next = Math.max(0, Math.min(23, state.config.boundaryHour + delta));
+    const requestId = (state.boundaryRequestId += 1);
+    const requestDate = state.config.targetDate;
     state.config.boundaryHour = next;
+    writeTextStorage(BOUNDARY_HOUR_KEY, String(next));
+    state.boundaryPinned = true;
     renderConfig();
     const bridge = api();
     if (bridge && state.config.targetDate) {
       bridge
-        .recompute_target(state.config.targetDate, next)
+        .recompute_target(requestDate, next)
         .then((iso) => {
+          if (requestId !== state.boundaryRequestId || state.config.boundaryHour !== next) return;
           if (iso) {
             state.config.targetDate = iso;
             setCalendarCursor(iso);
@@ -2657,6 +3107,7 @@
   }
 
   function openDatePicker() {
+    if (isGenerationLocked()) return;
     if (state.config.targetDate) {
       setCalendarCursor(state.config.targetDate);
       state.selectedDateIso = state.selectedDateIso || state.config.targetDate;
@@ -2670,10 +3121,63 @@
   }
 
   function toggleSettings(force) {
-    state.settingsOpen = typeof force === "boolean" ? force : !state.settingsOpen;
+    const nextOpen = typeof force === "boolean" ? force : !state.settingsOpen;
+    if (nextOpen === state.settingsOpen) return;
+    if (state.settingsHideTimer) {
+      clearTimeout(state.settingsHideTimer);
+      state.settingsHideTimer = null;
+    }
+    if (nextOpen) {
+      state.settingsLastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    state.settingsOpen = nextOpen;
     const panel = $("#settings-panel");
-    if (panel) panel.hidden = !state.settingsOpen;
+    if (panel) {
+      if (state.settingsOpen) {
+        panel.hidden = false;
+        panel.setAttribute("aria-hidden", "false");
+        panel.getBoundingClientRect();
+        requestAnimationFrame(() => {
+          if (!state.settingsOpen) return;
+          panel.classList.add("is-open");
+          panel.querySelector('[data-action="toggle-settings"]')?.focus({ preventScroll: true });
+        });
+      } else {
+        panel.classList.remove("is-open");
+        panel.setAttribute("aria-hidden", "true");
+        state.settingsHideTimer = setTimeout(() => {
+          if (!state.settingsOpen) panel.hidden = true;
+          state.settingsHideTimer = null;
+        }, 240);
+      }
+    }
     if (state.settingsOpen && state.menuOpen) toggleMenu(false);
+    const launcher = document.querySelector(".side-settings");
+    if (launcher) launcher.setAttribute("aria-expanded", String(state.settingsOpen));
+    if (!state.settingsOpen && panel?.contains(document.activeElement) && state.settingsLastFocus?.isConnected) {
+      state.settingsLastFocus.focus({ preventScroll: true });
+    }
+  }
+
+  function trapSettingsFocus(event) {
+    if (!state.settingsOpen || event.key !== "Tab") return;
+    const panel = $("#settings-panel");
+    if (!panel) return;
+    const focusable = Array.from(
+      panel.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((node) => node instanceof HTMLElement && node.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   function toggleMenu(force) {
@@ -2690,16 +3194,13 @@
       "wheel",
       (event) => {
         const canScrollY = node.scrollHeight > node.clientHeight + 1;
-        const canScrollX = node.scrollWidth > node.clientWidth + 1;
-        if (!canScrollY && !canScrollX) return;
+        if (!canScrollY) return;
 
         const prevTop = node.scrollTop;
-        const prevLeft = node.scrollLeft;
 
         if (canScrollY && event.deltaY) node.scrollTop += event.deltaY;
-        if (canScrollX && event.deltaX) node.scrollLeft += event.deltaX;
 
-        if (node.scrollTop !== prevTop || node.scrollLeft !== prevLeft) {
+        if (node.scrollTop !== prevTop) {
           event.preventDefault();
         }
       },
@@ -2712,20 +3213,19 @@
     const dateInput = $("#date-input");
     if (dateInput) {
       dateInput.addEventListener("change", (e) => {
+        if (isGenerationLocked()) {
+          e.target.value = state.config.targetDate || "";
+          return;
+        }
         state.config.targetDate = e.target.value;
         renderConfig();
         syncTargetDateView();
       });
     }
 
-    document.querySelectorAll('input[name="mode"]').forEach((r) =>
-      r.addEventListener("change", (e) => {
-        state.config.mode = e.target.value;
-      }),
-    );
-
     document.querySelectorAll('input[name="view"]').forEach((r) =>
       r.addEventListener("change", (e) => {
+        if (isGenerationLocked()) return;
         state.view = e.target.value;
         renderStage();
       }),
@@ -2734,13 +3234,23 @@
     const autoSave = $("#auto-save");
     if (autoSave) {
       autoSave.addEventListener("change", (e) => {
+        if (isGenerationLocked()) {
+          e.target.checked = state.config.autoSave;
+          return;
+        }
         state.config.autoSave = e.target.checked;
+        writeTextStorage(AUTO_SAVE_KEY, String(state.config.autoSave));
+        state.autoSavePinned = true;
       });
     }
 
     const outputLanguage = $("#output-language");
     if (outputLanguage) {
       outputLanguage.addEventListener("change", (e) => {
+        if (isGenerationLocked()) {
+          e.target.value = getOutputLanguageOption().key;
+          return;
+        }
         setOutputLanguage(e.target.value);
         showToast(
           t("toast.languageChanged", {
@@ -2753,6 +3263,10 @@
     const diaryLength = $("#diary-length");
     if (diaryLength) {
       diaryLength.addEventListener("change", (e) => {
+        if (isGenerationLocked()) {
+          e.target.value = getDiaryLengthOption().key;
+          return;
+        }
         setDiaryLength(e.target.value);
         showToast(
           t("toast.lengthChanged", {
@@ -2762,8 +3276,21 @@
       });
     }
 
+    const codexModel = $("#codex-model");
+    if (codexModel) {
+      codexModel.addEventListener("change", (e) => {
+        if (isGenerationLocked()) {
+          e.target.value = getCodexModelOption().key;
+          return;
+        }
+        setCodexModel(e.target.value);
+        showToast(t("toast.modelChanged", { model: getCodexModelOption().label }));
+      });
+    }
+
     document.querySelectorAll(".side-nav__item").forEach((btn) => {
       btn.addEventListener("click", () => {
+        if (isGenerationLocked()) return;
         state.nav = btn.dataset.nav || "diary";
         if (state.nav === "diary") {
           state.view = "diary";
@@ -2800,9 +3327,23 @@
       if (state.menuOpen && !event.target.closest(".menu-wrap")) {
         toggleMenu(false);
       }
+      if (
+        state.settingsOpen &&
+        !event.target.closest("#settings-panel") &&
+        !event.target.closest('[data-action="toggle-settings"]')
+      ) {
+        state.suppressNextClick = true;
+        toggleSettings(false);
+      }
     });
 
     document.addEventListener("click", (event) => {
+      if (state.suppressNextClick) {
+        state.suppressNextClick = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       const target = event.target.closest("[data-action]");
       if (!target) {
         if (state.menuOpen && !event.target.closest(".menu-wrap")) toggleMenu(false);
@@ -2814,6 +3355,7 @@
         if (!inMenu) toggleMenu(false);
       }
       const action = target.dataset.action;
+      if (isGenerationLocked() && action !== "generate") return;
       switch (action) {
         case "date-prev":
           shiftDate(-1);
@@ -2868,6 +3410,7 @@
     });
 
     document.addEventListener("keydown", (e) => {
+      trapSettingsFocus(e);
       if (e.key === "Escape") {
         if (state.menuOpen) toggleMenu(false);
         else if (state.settingsOpen) toggleSettings(false);
@@ -2915,6 +3458,7 @@
     try {
       const initial = await bridge.get_state();
       syncConfig(initial.config);
+      syncReadiness(initial.readiness);
       syncCodexStatus(initial.codex || {
         available: Boolean(initial.generation_available),
         connected: Boolean(initial.generation_available),
@@ -2926,6 +3470,8 @@
       state.dates = initial.entries?.dates || [];
       state.weeks = initial.entries?.weeks || [];
       renderSideDates();
+      await refreshReadiness({ rerender: true });
+      if (state.outDirPinned) await refreshLists();
       syncTargetDateView();
     } catch (err) {
       console.error(err);

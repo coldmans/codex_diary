@@ -178,16 +178,17 @@ def extract_events(source: ChronicleSource, markdown: str) -> list[Event]:
     order = 0
 
     for section_title, lines in blocks:
+        masked_section_title = mask_sensitive_text(section_title)
         for item in parse_block_items(lines):
             masked_item = mask_sensitive_text(item)
             events.append(
                 Event(
                     source=source,
                     order=order,
-                    section_title=section_title,
+                    section_title=masked_section_title,
                     text=masked_item,
-                    tags=categorize_event(masked_item, section_title),
-                    entities=extract_entities(masked_item, section_title),
+                    tags=categorize_event(masked_item, masked_section_title),
+                    entities=extract_entities(masked_item, masked_section_title),
                 )
             )
             order += 1

@@ -25,6 +25,30 @@ PRIMARY_COVERAGE_BUCKET_MINUTES = 120
 MIN_PRIMARY_SPAN_HOURS = 6
 DEDUPLICATION_WINDOW_MINUTES = 90
 DEDUPLICATION_WINDOW_WITH_6H_MINUTES = 390
+TAG_COMMENT_PREFIX = "<!-- tags:"
+GENERIC_HASHTAG_BLACKLIST = {
+    "today",
+    "work",
+    "diary",
+    "report",
+    "decision",
+    "decisions",
+    "blocker",
+    "blockers",
+    "next-action",
+    "next-actions",
+    "activity",
+    "activities",
+    "오늘",
+    "일기",
+    "보고서",
+    "결정",
+    "결정사항",
+    "막힘",
+    "막혔던점",
+    "내일",
+    "내일할일",
+}
 
 APP_STOPWORDS = {
     "Codex",
@@ -138,6 +162,20 @@ DIARY_LENGTH_PROFILES: dict[str, dict[str, Any]] = {
         "diary_paragraph_instruction": "6-8 full paragraphs",
         "guidance": "Be exhaustive while staying factual, and preserve many small but real context switches and follow-up checks.",
     },
+}
+
+FALLBACK_HASHTAG_SEEDS: dict[str, tuple[str, ...]] = {
+    "english": ("context-recovery", "review-pass", "next-step"),
+    "korean": ("맥락복구", "검토흐름", "다음작업"),
+    "japanese": ("文脈整理", "見直し", "次の作業"),
+    "chinese": ("整理脉络", "界面检查", "下一步"),
+    "french": ("reprise-contexte", "passe-revue", "suite"),
+    "german": ("kontextabgleich", "pruefpass", "naechsterschritt"),
+    "spanish": ("contexto", "revision", "siguiente-paso"),
+    "vietnamese": ("gom-mach", "ra-soat", "buoc-tiep"),
+    "thai": ("จัดบริบท", "ทบทวนงาน", "งานถัดไป"),
+    "russian": ("контекст", "проверка", "следующий-шаг"),
+    "hindi": ("context-reset", "review-pass", "next-step"),
 }
 
 OUTPUT_LANGUAGE_SPECS: dict[str, dict[str, Any]] = {
@@ -1163,6 +1201,67 @@ def output_language_label(output_language: str) -> str:
 def language_spec(output_language: str) -> dict[str, Any]:
     language = normalize_output_language(output_language)
     return OUTPUT_LANGUAGE_SPECS[language]
+
+
+def normalize_hashtag_candidate(value: str | None) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"`+", "", str(value)).strip()
+    if not text:
+        return ""
+    if "/" in text or "\\" in text:
+        text = text.replace("\\", "/").rsplit("/", 1)[-1]
+    text = re.sub(r"\.(md|txt|json|jsonl|js|jsx|ts|tsx|css|html|py|swift|java|kt|sqlite|sql)$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^[#@]+", "", text)
+    text = re.sub(r"\s+", "-", text)
+    text = re.sub(r"[^0-9A-Za-z\u00C0-\u024F\u0400-\u04FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7A3_-]+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-_")
+    if len(text) < 2 or len(text) > 24:
+        return ""
+    if text.lower() in GENERIC_HASHTAG_BLACKLIST:
+        return ""
+    return text
+
+
+def suggest_hashtags(
+    events: list[Event],
+    output_language: str,
+    *,
+    limit: int = 4,
+) -> list[str]:
+    language = normalize_output_language(output_language, default=COMPATIBILITY_FALLBACK_LANGUAGE)
+    seen: set[str] = set()
+    hashtags: list[str] = []
+
+    def push(value: str | None) -> None:
+        candidate = normalize_hashtag_candidate(value)
+        if not candidate:
+            return
+        key = candidate.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        hashtags.append(candidate)
+
+    for event in events:
+        for entity in event.entities:
+            push(entity)
+            if len(hashtags) >= limit:
+                return hashtags
+        push(event.section_title)
+        if len(hashtags) >= limit:
+            return hashtags
+
+    for seed in FALLBACK_HASHTAG_SEEDS.get(language, FALLBACK_HASHTAG_SEEDS["english"]):
+        push(seed)
+        if len(hashtags) >= limit:
+            break
+    return hashtags
+
+
+def format_tag_comment(tags: list[str]) -> str:
+    visible_tags = [f"#{tag}" for tag in tags if tag]
+    return f"{TAG_COMMENT_PREFIX} {' '.join(visible_tags)} -->"
 
 
 def phrase_pack(output_language: str) -> dict[str, Any]:
@@ -2456,6 +2555,7 @@ def build_llm_prompt(
             six_hour=six_hour,
         )
     exact_title = f"# {target_date} {title_suffix}"
+    tag_comment_example = "<!-- tags: #tag1 #tag2 #tag3 #tag4 -->"
     lines = [
         f"Target date: {target_date}",
         f"Mode: {mode}",
@@ -2477,6 +2577,9 @@ def build_llm_prompt(
         "- Never restore or repeat sensitive data.",
         "- Even if they feel low-signal, keep real app switches, short document checks, confirmation clicks, waiting states, and auth flows if they were actually visible.",
         f"- Length target: {normalized_length}. {profile['guidance']}",
+        "- Generate 3 to 5 short hashtags based only on real projects, decisions, blockers, or work themes that were actually visible.",
+        "- Avoid generic hashtags such as #today, #work, #diary, #report, #decision, or #blocker.",
+        f"- Right after the source-note blockquote, add exactly one HTML comment line in this format: {tag_comment_example}",
         "- Include both the report section and the diary section in the same document.",
         "- The diary section should not copy the report verbatim; it should sound softer and a little more personal while staying factual.",
         f"- The first line must be exactly: {exact_title}",
@@ -2485,6 +2588,7 @@ def build_llm_prompt(
         "- Keep the following Markdown structure and section headings exactly:",
         f"  {exact_title}",
         f"  {source_note}",
+        f"  {tag_comment_example}",
         f"  {spec['report_heading']}",
         f"  {sections['today']}",
         f"  {sections['timeline']}",
@@ -2544,11 +2648,14 @@ def fallback_markdown(
             ten_minute=stats.get("used_10min", 0),
             six_hour=six_hour,
         )
+    tag_comment = format_tag_comment(suggest_hashtags(events, language))
     return "\n".join(
         [
             f"# {target_date} {title_suffix}",
             "",
             source_note,
+            "",
+            tag_comment,
             "",
             format_report_section(
                 activities=activities,
@@ -2665,6 +2772,7 @@ def build_diary(
     day_boundary_hour: int,
     output_language: str = DEFAULT_OUTPUT_LANGUAGE,
     diary_length: str = DEFAULT_DIARY_LENGTH_CODE,
+    codex_model: str | None = None,
     provider: Optional[LLMProvider] = None,
     progress: Optional[ProgressCallback] = None,
     should_cancel: Optional[CancellationCheck] = None,
@@ -2769,7 +2877,14 @@ def build_diary(
         )
     raise_if_cancelled(should_cancel)
 
-    resolved_provider = provider if provider is not None else load_provider_from_codex()
+    resolved_provider = (
+        provider
+        if provider is not None
+        else load_provider_from_codex(
+            diary_length=normalized_diary_length,
+            codex_model=codex_model,
+        )
+    )
     markdown, used_llm, warnings = generate_markdown(
         target_date=target_date_iso,
         mode=mode,

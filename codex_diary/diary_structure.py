@@ -14,6 +14,9 @@ from .i18n import all_diary_headings, all_report_headings, all_section_aliases
 
 TIMELINE_RE = re.compile(r"^\[(\d{2}:\d{2})\]\s*(.*)")
 BULLET_RE = re.compile(r"^[-*+]\s+(.*)")
+TAG_COMMENT_RE = re.compile(r"^<!--\s*(?:tags?|hashtags?)\s*:\s*(.*?)\s*-->$", re.IGNORECASE)
+TAG_LINE_RE = re.compile(r"^(?:tags?|hashtags?)\s*:\s*(.*)$", re.IGNORECASE)
+TAG_TOKEN_RE = re.compile(r"#([^\s#]{2,24})")
 
 REPORT_HEADINGS = set(all_report_headings())
 DIARY_HEADINGS = set(all_diary_headings())
@@ -38,9 +41,26 @@ def _split_top_sections(markdown: str) -> Dict[str, List[str]]:
     return sections
 
 
-def _extract_title_and_quote(lines: List[str]) -> tuple[Optional[str], Optional[str], List[str]]:
+def _extract_tags(line: str) -> List[str]:
+    match = TAG_COMMENT_RE.match(line) or TAG_LINE_RE.match(line)
+    if not match:
+        return []
+    seen: set[str] = set()
+    tags: List[str] = []
+    for token in TAG_TOKEN_RE.findall(match.group(1)):
+        if token in seen:
+            continue
+        seen.add(token)
+        tags.append(token)
+        if len(tags) >= 6:
+            break
+    return tags
+
+
+def _extract_title_and_quote(lines: List[str]) -> tuple[Optional[str], Optional[str], List[str], List[str]]:
     title: Optional[str] = None
     quote: Optional[str] = None
+    tags: List[str] = []
     leftover: List[str] = []
     for line in lines:
         stripped = line.strip()
@@ -50,9 +70,14 @@ def _extract_title_and_quote(lines: List[str]) -> tuple[Optional[str], Optional[
         if quote is None and stripped.startswith("> "):
             quote = stripped[2:].strip()
             continue
+        extracted_tags = _extract_tags(stripped)
+        if extracted_tags:
+            if not tags:
+                tags = extracted_tags
+            continue
         if stripped:
             leftover.append(stripped)
-    return title, quote, leftover
+    return title, quote, tags, leftover
 
 
 def _split_report_subsections(lines: List[str]) -> Dict[str, List[str]]:
@@ -135,12 +160,13 @@ def _parse_paragraphs(lines: List[str]) -> List[str]:
 
 def structure_diary(markdown: str) -> Dict[str, Any]:
     sections = _split_top_sections(markdown)
-    title, intro_quote, _ = _extract_title_and_quote(sections["preamble"])
+    title, intro_quote, tags, _ = _extract_title_and_quote(sections["preamble"])
     report_subs = _split_report_subsections(sections["report"])
 
     structured: Dict[str, Any] = {
         "title": title or "",
         "intro_quote": intro_quote or "",
+        "tags": tags,
         "report": {
             "today": _clean_paragraph(report_subs.get("today", [])),
             "timeline": _parse_timeline(report_subs.get("timeline", [])),

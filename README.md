@@ -8,7 +8,15 @@ Generate a daily work report plus diary draft from Chronicle Markdown summaries.
 
 The generator currently depends on a local `codex` CLI login session. If Codex is not available or not logged in, the tool stops with a connection message instead of silently falling back to a different provider.
 
+During generation, selected and redacted Chronicle event snippets are sent to the local `codex exec` command so Codex can write the final diary/report draft. The app now runs that call with `--ephemeral`, but users should still treat Chronicle summaries as potentially sensitive input.
+
 English is the source-of-truth README. Localized READMEs may lag slightly when the project changes.
+
+## Download for macOS
+
+[Download the latest macOS DMG](https://github.com/coldmans/codex_diary/releases/latest/download/Codex-Diary-0.1.0-macOS.dmg)
+
+After installing, open `Codex Diary.app`, connect Codex if needed, choose the Chronicle summary folder, and create a diary for the selected date. The app is currently distributed as an unsigned macOS build, so macOS may ask you to confirm opening it from System Settings or the Finder context menu.
 
 ## Why this tool exists
 
@@ -24,12 +32,12 @@ The current diary policy is:
 ## Features
 
 - Generates both a `Work Report` section and a `Diary Version` section in one Markdown file
-- Supports `draft-update` and `finalize` modes
 - Uses Chronicle summary Markdown files only
 - Supports optional redaction before generation
 - Supports CLI and a desktop app built with `pywebview`
 - Supports multilingual diary output
 - Supports four diary-length presets: `short`, `medium`, `long`, `very-long`
+- Lets users choose the Codex CLI model used for generation, such as `gpt-5.4` or `gpt-5.5`
 - Supports cancelling an in-flight generation from the desktop app
 - Can package the desktop app into a macOS `.dmg`
 
@@ -48,8 +56,11 @@ That structure is set up in this repository now, so adding another language late
 - Python `3.9+`
 - Local `codex` CLI installed
 - A valid Codex login session through `codex login`
+- Chronicle enabled and writing Markdown summaries under `~/.codex/memories_extensions/chronicle/resources`
 
 The app checks login status internally with `codex login status`. In the desktop app, the connect flow can open `codex login --device-auth` in Terminal on macOS.
+
+Codex Diary does not process raw recordings, screenshots, or OCR files. If the Chronicle summary folder is missing or empty, create some Chronicle summaries first or choose the correct summary folder in Settings.
 
 ## Installation
 
@@ -75,18 +86,16 @@ Default output path:
 Examples:
 
 ```bash
-codex-diary finalize --date 2026-04-21
-codex-diary draft-update --date 2026-04-21
-codex-diary finalize --date 2026-04-21 --dry-run
-codex-diary finalize --date 2026-04-21 --output-language ko
-codex-diary finalize --date 2026-04-21 --length very-long
-codex-diary finalize --source-dir ~/.codex/memories_extensions/chronicle/resources
-codex-diary finalize --out-dir ./custom-output --day-boundary-hour 4
+codex-diary --date 2026-04-21
+codex-diary --date 2026-04-21 --dry-run
+codex-diary --date 2026-04-21 --output-language ko
+codex-diary --date 2026-04-21 --length very-long
+codex-diary --source-dir ~/.codex/memories_extensions/chronicle/resources
+codex-diary --out-dir ./custom-output --day-boundary-hour 4
 ```
 
 Main options:
 
-- `draft-update` / `finalize`: choose draft accumulation or final diary generation
 - `--date YYYY-MM-DD`: generate for a specific day
 - `--source-dir <path>`: override the Chronicle summary directory
 - `--out-dir <path>`: choose the output directory
@@ -121,14 +130,14 @@ The app supports:
 - Choosing Chronicle input and output folders
 - Choosing the output language
 - Choosing the diary length preset
-- Switching between `draft-update` and `finalize`
+- Choosing the Codex model shown in the top-right status pill
 - Cancelling an in-flight generation
 - Viewing report, diary, and raw Markdown inside the app
 - Browsing recent dates and weekly archives
 - Copying the current view
 - Opening the result in an external app
 
-The app also shows Codex connection status and disables generation until the login flow is complete.
+The app also shows the selected Codex model in the top-right status pill. Changing that selector overrides the model passed to `codex exec -m ...`; if a newer model is not yet available through the local CLI, pick another available model and try again.
 
 ## macOS packaging
 
@@ -185,6 +194,10 @@ Typical sections include:
 
 The diary version is phrased more naturally than the report section, but it is still designed to stay grounded in observed work rather than inventing off-screen emotions or activities.
 
+## Internal Logic Docs
+
+- [Event selection and similarity judgment, explained in Korean](docs/event-selection-similarity.ko.md): a beginner-friendly walkthrough of how Chronicle summaries become events, how duplicates are removed, and how prompt events are selected.
+
 ## Environment variables
 
 No environment variables are required.
@@ -204,6 +217,6 @@ python3 -m compileall codex_diary
 
 - Chronicle summaries are already second-order summaries, so some detail is inevitably lost.
 - Generation does not work without a locally installed and logged-in `codex` CLI.
+- Selected Chronicle event snippets are sent through `codex exec`; redaction is best-effort and pattern-based.
 - The current source parser assumes Chronicle summary filenames use the expected UTC timestamp format.
-- Redaction is pattern-based and should not be treated as perfect secret detection.
-- The macOS DMG flow is currently intended for unsigned local distribution.
+- The macOS DMG flow is currently intended for unsigned local distribution, so macOS may show an unidentified developer warning.

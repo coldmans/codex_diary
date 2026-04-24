@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 from . import __version__
 
 APP_NAME = "Codex Diary"
+BUNDLE_IDENTIFIER = "io.github.coldmans.codex-diary"
 ICONSET_SPECS = (
     ("icon_16x16.png", 16),
     ("icon_16x16@2x.png", 32),
@@ -57,6 +59,31 @@ def app_bundle_path(dist_dir: Path, app_name: str) -> Path:
 
 def auxiliary_dist_path(dist_dir: Path, app_name: str) -> Path:
     return dist_dir / app_name
+
+
+def update_app_bundle_metadata(
+    app_bundle: Path,
+    *,
+    app_name: str,
+    version: str,
+    bundle_identifier: str = BUNDLE_IDENTIFIER,
+) -> None:
+    info_path = app_bundle / "Contents" / "Info.plist"
+    if not info_path.exists():
+        raise RuntimeError(f"앱 번들 Info.plist를 찾지 못했습니다: {info_path}")
+    with info_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    info["CFBundleIdentifier"] = bundle_identifier
+    info["CFBundleName"] = app_name
+    info["CFBundleDisplayName"] = app_name
+    info["CFBundleShortVersionString"] = version
+    info["CFBundleVersion"] = version
+    with info_path.open("wb") as handle:
+        plistlib.dump(info, handle)
+
+
+def ad_hoc_sign_app_bundle(app_bundle: Path) -> None:
+    run_command(["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)])
 
 
 def ensure_macos() -> None:
@@ -164,6 +191,8 @@ def build_pyinstaller_app(
     bundle = app_bundle_path(dist_dir, app_name)
     if not bundle.exists():
         raise RuntimeError(f"PyInstaller 빌드가 끝났지만 앱 번들을 찾지 못했습니다: {bundle}")
+    update_app_bundle_metadata(bundle, app_name=app_name, version=__version__)
+    ad_hoc_sign_app_bundle(bundle)
     return bundle
 
 

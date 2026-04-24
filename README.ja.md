@@ -24,7 +24,6 @@ Chronicle はすでに活動記録を要約 Markdown に圧縮しているため
 ## 主な機能
 
 - 1 つの Markdown ファイルに `Work Report` と `Diary Version` を同時に生成
-- `draft-update` と `finalize` モードを提供
 - Chronicle 要約 Markdown のみを入力として利用
 - 生成前の簡易マスキングに対応
 - `pywebview` ベースのデスクトップアプリと CLI を提供
@@ -73,17 +72,15 @@ pip install -e ".[macos-build]"
 例:
 
 ```bash
-codex-diary finalize --date 2026-04-21
-codex-diary draft-update --date 2026-04-21
-codex-diary finalize --date 2026-04-21 --dry-run
-codex-diary finalize --date 2026-04-21 --output-language ja
-codex-diary finalize --source-dir ~/.codex/memories_extensions/chronicle/resources
-codex-diary finalize --out-dir ./custom-output --day-boundary-hour 4
+codex-diary --date 2026-04-21
+codex-diary --date 2026-04-21 --dry-run
+codex-diary --date 2026-04-21 --output-language ja
+codex-diary --source-dir ~/.codex/memories_extensions/chronicle/resources
+codex-diary --out-dir ./custom-output --day-boundary-hour 4
 ```
 
 主なオプション:
 
-- `draft-update` / `finalize`: 下書き更新または最終 diary 生成
 - `--date YYYY-MM-DD`: 特定日付を対象に生成
 - `--source-dir <path>`: Chronicle 要約ディレクトリを上書き
 - `--out-dir <path>`: 出力ディレクトリを指定
@@ -116,7 +113,6 @@ codex-diary-app
 - 対象日付の選択
 - Chronicle 入力フォルダ / 出力フォルダの選択
 - 出力言語の選択
-- `draft-update` / `finalize` の切り替え
 - アプリ内でレポート / 日記 / 生 Markdown を表示
 - 最近の日付や週次アーカイブの閲覧
 - 現在ビューのコピー

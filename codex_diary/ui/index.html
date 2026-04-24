@@ -74,8 +74,10 @@
           </div>
         </aside>
 
-        <button type="button" class="side-settings" data-action="toggle-settings">
-          <span class="side-settings__icon">⚙︎</span>
+        <button type="button" class="side-settings" data-action="toggle-settings" aria-controls="settings-panel" aria-expanded="false">
+          <span class="side-settings__icon">
+            <img src="assets/settings-gear.png" alt="" />
+          </span>
           <span>Settings</span>
         </button>
       </aside>
@@ -96,7 +98,7 @@
                     <span id="date-main">2026. 04. 21.</span>
                     <span id="date-weekday" class="paper__weekday">Tuesday</span>
                   </div>
-                  <input id="date-input" type="date" aria-label="Choose date" />
+                  <input id="date-input" type="date" aria-label="Choose date" tabindex="-1" aria-hidden="true" />
                 </div>
                 <div class="paper__date-meta">
                   <button type="button" class="pill-btn pill-btn--accent" data-action="jump-today">Today</button>
@@ -121,6 +123,9 @@
               <div class="paper__toolbar-meta">
                 <div id="codex-status" class="bridge-status" aria-live="polite">
                   <span class="bridge-status__dot"></span>
+                  <select id="codex-model" class="bridge-status__select" aria-label="Codex model">
+                    <option value="gpt-5.4">GPT-5.4</option>
+                  </select>
                   <span class="bridge-status__text">Checking Codex</span>
                   <span class="bridge-status__detail">Please wait a moment.</span>
                   <button type="button" class="bridge-status__action" data-action="codex-connect">Connect</button>
@@ -138,7 +143,7 @@
                   <span class="spinner" hidden></span>
                 </button>
                 <div class="menu-wrap">
-                  <button type="button" class="round-btn round-btn--ghost" data-action="toggle-menu" title="More" aria-expanded="false">
+                  <button type="button" class="round-btn round-btn--ghost" data-action="toggle-menu" title="More" aria-haspopup="menu" aria-controls="overflow-menu" aria-expanded="false">
                     <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
                       <circle cx="4.5" cy="10" r="1.3" fill="currentColor"/>
                       <circle cx="10" cy="10" r="1.3" fill="currentColor"/>
@@ -168,7 +173,7 @@
         <div id="status-warning" class="status-warning" role="alert" hidden></div>
       </main>
 
-      <aside id="settings-panel" class="settings" hidden aria-label="Settings panel">
+      <aside id="settings-panel" class="settings" hidden role="dialog" aria-modal="true" aria-hidden="true" aria-label="Settings panel">
         <div class="settings__head">
           <div class="settings__head-copy">
             <div class="settings__eyebrow">Preferences</div>
@@ -218,14 +223,6 @@
             <span class="setting__hint">Records before this time are grouped into the previous day.</span>
           </label>
 
-          <label class="setting setting--card">
-            <span>Generation mode</span>
-            <div class="segmented segmented--block">
-              <label><input type="radio" name="mode" value="finalize" checked /><span>Finalize diary</span></label>
-              <label><input type="radio" name="mode" value="draft-update" /><span>Update draft</span></label>
-            </div>
-          </label>
-
           <label class="setting setting--card setting--check">
             <input id="auto-save" type="checkbox" checked />
             <div class="setting__check-copy">
@@ -258,6 +255,7 @@
     </div>
 
     <script src="ui_copy.js" defer></script>
+    <script src="ui_copy_extra.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

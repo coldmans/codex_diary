@@ -1,11 +1,20 @@
 from datetime import date, datetime, timezone
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from codex_diary.llm import GenerationCancelledError, LLMError, load_provider_from_codex
+from codex_diary.llm import (
+    CodexConnectionError,
+    CodexCliProvider,
+    GenerationCancelledError,
+    LLMError,
+    codex_timeout_seconds_for_length,
+    load_provider_from_codex,
+    read_codex_config_model,
+)
 from codex_diary.generator import (
     build_diary,
     build_llm_prompt,
@@ -18,6 +27,7 @@ from codex_diary.generator import (
     sample_events_for_prompt,
 )
 from codex_diary.models import ChronicleSource, Event
+from codex_diary.parser import extract_events
 from codex_diary.redaction import mask_sensitive_text
 
 
@@ -184,6 +194,17 @@ class ProcessingTests(unittest.TestCase):
         self.assertIn("[REDACTED_PHONE]", masked)
         self.assertIn("[REDACTED_SECRET]", masked)
 
+    def test_extract_events_masks_section_titles(self) -> None:
+        source = make_source("2026-04-21T04-00-00-test-10min-memory-summary.md", "10min")
+        markdown = "## token sk-test-1234567890abcdef\n\n- checked harmless detail"
+
+        events = extract_events(source, markdown)
+
+        self.assertTrue(events)
+        for event in events:
+            self.assertNotIn("sk-test-1234567890abcdef", event.section_title)
+            self.assertNotIn("sk-test-1234567890abcdef", " ".join(event.entities))
+
     def test_minor_timeline_keeps_low_signal_flow(self) -> None:
         source = make_source("timeline.md", "10min")
         events = [
@@ -246,6 +267,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertIn("## 금일 작업 보고서", markdown)
         self.assertIn("## 오늘의 일기 버전", markdown)
         self.assertIn("### 오늘 한 일", markdown)
+        self.assertIn("<!-- tags:", markdown)
         self.assertIn("SQLite 기준 테스트", markdown)
 
     def test_fallback_markdown_supports_english_output(self) -> None:
@@ -278,6 +300,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertIn("## Work Report", markdown)
         self.assertIn("## Diary Version", markdown)
         self.assertIn("### What I Did Today", markdown)
+        self.assertIn("<!-- tags:", markdown)
         self.assertIn("SQLite-oriented tests", markdown)
 
     def test_build_llm_prompt_samples_across_full_day(self) -> None:
@@ -357,6 +380,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertIn("Diary length: very-long", prompt)
         self.assertIn("Length target: very-long.", prompt)
         self.assertIn("(6-8 full paragraphs)", prompt)
+        self.assertIn("<!-- tags: #tag1 #tag2 #tag3 #tag4 -->", prompt)
 
     def test_choose_events_adds_6h_when_10min_coverage_is_narrow(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -596,6 +620,125 @@ class ProcessingTests(unittest.TestCase):
         with patch("codex_diary.llm.subprocess.run", side_effect=fake_run):
             with self.assertRaises(LLMError) as ctx:
                 load_provider_from_codex()
+        self.assertIn("먼저 codex를 연결해주세요", str(ctx.exception))
+
+    def test_codex_timeout_seconds_scale_with_diary_length(self) -> None:
+        self.assertEqual(codex_timeout_seconds_for_length("short"), 240)
+        self.assertEqual(codex_timeout_seconds_for_length("medium"), 240)
+        self.assertEqual(codex_timeout_seconds_for_length("long"), 300)
+        self.assertEqual(codex_timeout_seconds_for_length("very-long"), 360)
+
+    def test_load_provider_from_codex_uses_diary_length_timeout(self) -> None:
+        status = SimpleNamespace(
+            available=True,
+            connected=True,
+            auth_mode="chatgpt",
+            message="Codex가 연결되어 있어요.",
+            command="/opt/homebrew/bin/codex",
+        )
+
+        with patch("codex_diary.llm.ensure_codex_connected", return_value=status):
+            provider = load_provider_from_codex(diary_length="very-long")
+
+        self.assertIsInstance(provider, CodexCliProvider)
+        self.assertEqual(provider.timeout_seconds, 360)
+
+    def test_load_provider_from_codex_uses_selected_model(self) -> None:
+        status = SimpleNamespace(
+            available=True,
+            connected=True,
+            auth_mode="chatgpt",
+            message="Codex가 연결되어 있어요.",
+            command="/opt/homebrew/bin/codex",
+        )
+
+        with patch("codex_diary.llm.ensure_codex_connected", return_value=status):
+            provider = load_provider_from_codex(diary_length="short", codex_model="gpt-5.4")
+
+        self.assertIsInstance(provider, CodexCliProvider)
+        self.assertEqual(provider.model, "gpt-5.4")
+
+    def test_read_codex_config_model(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            config = Path(tmpdir) / "config.toml"
+            config.write_text('model = "gpt-5.5"\nmodel_reasoning_effort = "medium"\n', encoding="utf-8")
+
+            self.assertEqual(read_codex_config_model(config), "gpt-5.5")
+
+    def test_codex_provider_uses_ephemeral_exec(self) -> None:
+        captured_args = []
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = StringIO()
+                self.returncode = 0
+
+            def poll(self) -> int:
+                return 0
+
+        def fake_popen(args, **kwargs):  # type: ignore[no-untyped-def]
+            captured_args.append(args)
+            output_path = Path(args[args.index("-o") + 1])
+            output_path.write_text("# Diary\n", encoding="utf-8")
+            return FakeProcess()
+
+        provider = CodexCliProvider(command="/opt/homebrew/bin/codex", model="gpt-5.4")
+        with patch("codex_diary.llm.subprocess.Popen", side_effect=fake_popen):
+            markdown = provider.generate_markdown("prompt")
+
+        self.assertEqual(markdown, "# Diary")
+        self.assertIn("-m", captured_args[0])
+        self.assertEqual(captured_args[0][captured_args[0].index("-m") + 1], "gpt-5.4")
+        self.assertIn("--ephemeral", captured_args[0])
+        self.assertLess(captured_args[0].index("--ephemeral"), captured_args[0].index("--skip-git-repo-check"))
+
+    def test_codex_provider_reports_model_access_error_before_auth_noise(self) -> None:
+        error_text = (
+            "ERROR rmcp::transport::worker: Auth(TokenRefreshFailed("
+            "\"Server returned error response: invalid_grant: Invalid refresh token\"))\n"
+            "ERROR: stream disconnected before completion: The model `gpt-5.5` "
+            "does not exist or you do not have access to it."
+        )
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = StringIO()
+                self.returncode = 1
+
+            def poll(self) -> int:
+                return self.returncode
+
+        def fake_popen(args, **kwargs):  # type: ignore[no-untyped-def]
+            kwargs["stderr"].write(error_text)
+            return FakeProcess()
+
+        provider = CodexCliProvider(command="/opt/homebrew/bin/codex")
+        with patch("codex_diary.llm.subprocess.Popen", side_effect=fake_popen):
+            with self.assertRaises(LLMError) as ctx:
+                provider.generate_markdown("prompt")
+
+        self.assertNotIsInstance(ctx.exception, CodexConnectionError)
+        self.assertIn("현재 설정된 모델", str(ctx.exception))
+        self.assertIn("gpt-5.5", str(ctx.exception))
+
+    def test_codex_provider_still_reports_true_login_failure_as_connection_error(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = StringIO()
+                self.returncode = 1
+
+            def poll(self) -> int:
+                return self.returncode
+
+        def fake_popen(args, **kwargs):  # type: ignore[no-untyped-def]
+            kwargs["stderr"].write("ERROR: Not logged in. Please run codex login.")
+            return FakeProcess()
+
+        provider = CodexCliProvider(command="/opt/homebrew/bin/codex")
+        with patch("codex_diary.llm.subprocess.Popen", side_effect=fake_popen):
+            with self.assertRaises(CodexConnectionError) as ctx:
+                provider.generate_markdown("prompt")
+
         self.assertIn("먼저 codex를 연결해주세요", str(ctx.exception))
 
 

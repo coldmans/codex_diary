@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import sys
 import threading
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,10 +31,12 @@ from .i18n import (
     supported_language_codes,
 )
 from .llm import (
-    CODEX_NOT_CONNECTED_MESSAGE,
     GenerationCancelledError,
+    SUPPORTED_CODEX_MODELS,
     codex_login_command_args,
+    default_codex_model,
     get_codex_status,
+    normalize_codex_model,
 )
 from .markdown_html import render_markdown
 
@@ -48,6 +51,7 @@ PROGRESS_PHASE_KEYS = {
     "write": ("loading.step.write", "loading.detail.write"),
     "finish": ("loading.step.finish", "loading.detail.finish"),
 }
+_NOTIFICATION_DELEGATE_CLASS = None
 
 PREVIEW_EMPTY_MESSAGE = (
     "# Codex Diary\n\n"
@@ -148,6 +152,232 @@ WEEKLY_OVERVIEW_COPY = {
     },
 }
 
+SYSTEM_NOTIFICATION_COPY = {
+    "en": {
+        "ready_title": "Diary Ready",
+        "ready_message": "{date} entry is ready in Codex Diary.",
+        "failed_title": "Generation Failed",
+        "failed_message": "The {date} entry could not be finished. Open Codex Diary to check the error.",
+    },
+    "ko": {
+        "ready_title": "일기 생성 완료",
+        "ready_message": "{date} 기록이 준비됐어요. Codex Diary에서 바로 열 수 있어요.",
+        "failed_title": "일기 생성 실패",
+        "failed_message": "{date} 기록 생성이 끝나지 않았어요. Codex Diary를 열어 오류를 확인해 주세요.",
+    },
+    "ja": {
+        "ready_title": "日記の作成完了",
+        "ready_message": "{date} の記録ができました。Codex Diary ですぐ開けます。",
+        "failed_title": "日記の作成に失敗しました",
+        "failed_message": "{date} の記録を最後まで作れませんでした。Codex Diary を開いてエラーを確認してください。",
+    },
+    "zh": {
+        "ready_title": "日记已生成",
+        "ready_message": "{date} 的记录已经准备好了，可以在 Codex Diary 中直接打开。",
+        "failed_title": "日记生成失败",
+        "failed_message": "{date} 的记录没有顺利生成完成，请打开 Codex Diary 查看错误。",
+    },
+    "fr": {
+        "ready_title": "Journal pret",
+        "ready_message": "L'entree du {date} est prete dans Codex Diary.",
+        "failed_title": "Echec de generation",
+        "failed_message": "L'entree du {date} n'a pas pu etre terminee. Ouvrez Codex Diary pour verifier l'erreur.",
+    },
+    "de": {
+        "ready_title": "Tagebuch fertig",
+        "ready_message": "Der Eintrag fur {date} ist in Codex Diary bereit.",
+        "failed_title": "Erstellung fehlgeschlagen",
+        "failed_message": "Der Eintrag fur {date} konnte nicht abgeschlossen werden. Offne Codex Diary und prufe den Fehler.",
+    },
+    "es": {
+        "ready_title": "Diario listo",
+        "ready_message": "La entrada del {date} ya esta lista en Codex Diary.",
+        "failed_title": "Fallo en la generacion",
+        "failed_message": "La entrada del {date} no pudo completarse. Abre Codex Diary para revisar el error.",
+    },
+    "vi": {
+        "ready_title": "Nhat ky da xong",
+        "ready_message": "Ban ghi ngay {date} da san sang trong Codex Diary.",
+        "failed_title": "Tao nhat ky that bai",
+        "failed_message": "Khong the hoan tat ban ghi ngay {date}. Hay mo Codex Diary de xem loi.",
+    },
+    "th": {
+        "ready_title": "ไดอารีพร้อมแล้ว",
+        "ready_message": "บันทึกของวันที่ {date} พร้อมเปิดใน Codex Diary แล้ว",
+        "failed_title": "สร้างไดอารีไม่สำเร็จ",
+        "failed_message": "ไม่สามารถสร้างบันทึกของวันที่ {date} ให้เสร็จได้ โปรดเปิด Codex Diary เพื่อตรวจสอบข้อผิดพลาด",
+    },
+    "ru": {
+        "ready_title": "Дневник готов",
+        "ready_message": "Запись за {date} готова в Codex Diary.",
+        "failed_title": "Не удалось создать запись",
+        "failed_message": "Не удалось завершить запись за {date}. Откройте Codex Diary и проверьте ошибку.",
+    },
+    "hi": {
+        "ready_title": "डायरी तैयार है",
+        "ready_message": "{date} की एंट्री Codex Diary में तैयार है।",
+        "failed_title": "डायरी बन नहीं पाई",
+        "failed_message": "{date} की एंट्री पूरी नहीं हो सकी। त्रुटि देखने के लिए Codex Diary खोलें।",
+    },
+}
+
+BRIDGE_COPY = {
+    "en": {
+        "codex_terminal": "First check whether the `codex` command is available in Terminal.",
+        "codex_connected_detail": "Your login looks good.",
+        "codex_login_detail": "Login is required.",
+        "ready_status": "Choose a date and press `Create` to open the diary right inside the app.",
+        "macos_only": "Connecting Codex can only be started directly on macOS.",
+        "cancel_none": "There is no generation in progress.",
+        "cancelling": "Cancelling the current generation.",
+        "already_connected": "Codex is already connected.",
+        "terminal_opened": "Opened a Codex login window in Terminal. After you finish, check the status again.",
+        "connect_required": "Connect Codex first.",
+        "generation_in_progress": "A generation is already in progress.",
+        "missing_saved_diary": "Could not find a saved diary for {date}.",
+    },
+    "ko": {
+        "codex_terminal": "터미널에서 `codex` 명령이 보이는지 먼저 확인해 주세요.",
+        "codex_connected_detail": "로그인 상태가 정상이에요.",
+        "codex_login_detail": "로그인이 필요해요.",
+        "ready_status": "날짜를 고르고 `생성`을 누르면 앱 안에서 바로 일기를 볼 수 있습니다.",
+        "macos_only": "Codex 연결은 macOS에서만 바로 시작할 수 있어요.",
+        "cancel_none": "진행 중인 생성 작업이 없어요.",
+        "cancelling": "생성을 취소하는 중이에요.",
+        "already_connected": "이미 Codex에 연결되어 있어요.",
+        "terminal_opened": "Terminal에서 Codex 로그인 창을 열었어요. 완료한 뒤 상태를 다시 확인해 주세요.",
+        "connect_required": "먼저 codex를 연결해주세요.",
+        "generation_in_progress": "이미 생성이 진행 중입니다.",
+        "missing_saved_diary": "{date} 날짜의 저장된 일기를 찾지 못했습니다.",
+    },
+    "ja": {
+        "codex_terminal": "まず Terminal で `codex` コマンドが使えるか確認してください。",
+        "codex_connected_detail": "ログイン状態は正常です。",
+        "codex_login_detail": "ログインが必要です。",
+        "ready_status": "日付を選んで `Create` を押すと、アプリ内ですぐに日記を開けます。",
+        "macos_only": "Codex への接続は macOS でのみ直接開始できます。",
+        "cancel_none": "進行中の生成はありません。",
+        "cancelling": "生成をキャンセルしています。",
+        "already_connected": "Codex はすでに接続されています。",
+        "terminal_opened": "Terminal で Codex ログイン画面を開きました。完了したら状態をもう一度確認してください。",
+        "connect_required": "先に Codex を接続してください。",
+        "generation_in_progress": "すでに生成が進行中です。",
+        "missing_saved_diary": "{date} の保存済み日記が見つかりませんでした。",
+    },
+    "zh": {
+        "codex_terminal": "请先确认 Terminal 里可以使用 `codex` 命令。",
+        "codex_connected_detail": "登录状态正常。",
+        "codex_login_detail": "需要先登录。",
+        "ready_status": "选择日期并按下 `Create` 后，就能在应用里直接打开日记。",
+        "macos_only": "只有在 macOS 上才能直接发起 Codex 连接。",
+        "cancel_none": "当前没有正在进行的生成任务。",
+        "cancelling": "正在取消当前生成。",
+        "already_connected": "Codex 已经连接好了。",
+        "terminal_opened": "已经在 Terminal 中打开 Codex 登录窗口。完成后请再次检查状态。",
+        "connect_required": "请先连接 Codex。",
+        "generation_in_progress": "已经有一个生成任务在进行中。",
+        "missing_saved_diary": "找不到 {date} 的已保存日记。",
+    },
+    "fr": {
+        "codex_terminal": "Verifiez d'abord dans Terminal que la commande `codex` est disponible.",
+        "codex_connected_detail": "Votre connexion est en ordre.",
+        "codex_login_detail": "Une connexion est necessaire.",
+        "ready_status": "Choisissez une date puis appuyez sur `Create` pour ouvrir le journal directement dans l'app.",
+        "macos_only": "La connexion a Codex ne peut etre lancee directement que sur macOS.",
+        "cancel_none": "Aucune generation n'est en cours.",
+        "cancelling": "Annulation de la generation en cours.",
+        "already_connected": "Codex est deja connecte.",
+        "terminal_opened": "Une fenetre de connexion Codex a ete ouverte dans Terminal. Une fois termine, reverifiez l'etat.",
+        "connect_required": "Connectez d'abord Codex.",
+        "generation_in_progress": "Une generation est deja en cours.",
+        "missing_saved_diary": "Impossible de trouver un journal enregistre pour le {date}.",
+    },
+    "de": {
+        "codex_terminal": "Pruefe zuerst im Terminal, ob der Befehl `codex` verfuegbar ist.",
+        "codex_connected_detail": "Dein Login sieht gut aus.",
+        "codex_login_detail": "Eine Anmeldung ist erforderlich.",
+        "ready_status": "Waehle ein Datum und druecke `Create`, um das Tagebuch direkt in der App zu oeffnen.",
+        "macos_only": "Die Codex-Verbindung kann nur unter macOS direkt gestartet werden.",
+        "cancel_none": "Es laeuft gerade keine Generierung.",
+        "cancelling": "Die aktuelle Generierung wird abgebrochen.",
+        "already_connected": "Codex ist bereits verbunden.",
+        "terminal_opened": "Ein Codex-Loginfenster wurde im Terminal geoeffnet. Pruefe den Status erneut, sobald du fertig bist.",
+        "connect_required": "Verbinde zuerst Codex.",
+        "generation_in_progress": "Es laeuft bereits eine Generierung.",
+        "missing_saved_diary": "Fuer {date} wurde kein gespeichertes Tagebuch gefunden.",
+    },
+    "es": {
+        "codex_terminal": "Primero revisa en Terminal si el comando `codex` esta disponible.",
+        "codex_connected_detail": "Tu sesion esta correcta.",
+        "codex_login_detail": "Hace falta iniciar sesion.",
+        "ready_status": "Elige una fecha y pulsa `Create` para abrir el diario directamente dentro de la app.",
+        "macos_only": "La conexion a Codex solo puede iniciarse directamente en macOS.",
+        "cancel_none": "No hay ninguna generacion en curso.",
+        "cancelling": "Cancelando la generacion actual.",
+        "already_connected": "Codex ya esta conectado.",
+        "terminal_opened": "Se abrio una ventana de acceso de Codex en Terminal. Cuando termines, vuelve a comprobar el estado.",
+        "connect_required": "Conecta primero Codex.",
+        "generation_in_progress": "Ya hay una generacion en curso.",
+        "missing_saved_diary": "No se encontro un diario guardado para {date}.",
+    },
+    "vi": {
+        "codex_terminal": "Truoc tien hay kiem tra trong Terminal xem co lenh `codex` hay khong.",
+        "codex_connected_detail": "Trang thai dang nhap dang tot.",
+        "codex_login_detail": "Can dang nhap truoc.",
+        "ready_status": "Chon ngay roi bam `Create` de mo nhat ky ngay trong ung dung.",
+        "macos_only": "Chi tren macOS moi co the bat dau ket noi Codex truc tiep.",
+        "cancel_none": "Khong co lan tao nao dang chay.",
+        "cancelling": "Dang huy lan tao hien tai.",
+        "already_connected": "Codex da duoc ket noi roi.",
+        "terminal_opened": "Da mo cua so dang nhap Codex trong Terminal. Hoan tat xong thi hay kiem tra lai trang thai.",
+        "connect_required": "Hay ket noi Codex truoc.",
+        "generation_in_progress": "Da co mot lan tao dang dien ra.",
+        "missing_saved_diary": "Khong tim thay nhat ky da luu cho ngay {date}.",
+    },
+    "th": {
+        "codex_terminal": "กรุณาตรวจดูก่อนว่าใน Terminal ใช้คำสั่ง `codex` ได้หรือไม่",
+        "codex_connected_detail": "สถานะการล็อกอินปกติดี",
+        "codex_login_detail": "จำเป็นต้องล็อกอินก่อน",
+        "ready_status": "เลือกวันที่แล้วกด `Create` เพื่อเปิดไดอารีได้ตรงในแอปทันที",
+        "macos_only": "การเชื่อมต่อ Codex แบบเริ่มตรงๆ ทำได้เฉพาะบน macOS",
+        "cancel_none": "ตอนนี้ไม่มีงานสร้างที่กำลังทำอยู่",
+        "cancelling": "กำลังยกเลิกการสร้างปัจจุบัน",
+        "already_connected": "Codex เชื่อมต่ออยู่แล้ว",
+        "terminal_opened": "ได้เปิดหน้าต่างล็อกอิน Codex ใน Terminal แล้ว หลังทำเสร็จกรุณาตรวจสอบสถานะอีกครั้ง",
+        "connect_required": "กรุณาเชื่อมต่อ Codex ก่อน",
+        "generation_in_progress": "มีงานสร้างกำลังทำอยู่แล้ว",
+        "missing_saved_diary": "ไม่พบไดอารีที่บันทึกไว้สำหรับ {date}",
+    },
+    "ru": {
+        "codex_terminal": "Сначала проверьте в Terminal, доступна ли команда `codex`.",
+        "codex_connected_detail": "С входом все в порядке.",
+        "codex_login_detail": "Нужно войти в систему.",
+        "ready_status": "Выберите дату и нажмите `Create`, чтобы открыть дневник прямо в приложении.",
+        "macos_only": "Подключение Codex можно запустить напрямую только на macOS.",
+        "cancel_none": "Сейчас нет активной генерации.",
+        "cancelling": "Отменяю текущую генерацию.",
+        "already_connected": "Codex уже подключен.",
+        "terminal_opened": "Окно входа Codex открыто в Terminal. После завершения снова проверьте статус.",
+        "connect_required": "Сначала подключите Codex.",
+        "generation_in_progress": "Генерация уже выполняется.",
+        "missing_saved_diary": "Не удалось найти сохраненный дневник за {date}.",
+    },
+    "hi": {
+        "codex_terminal": "पहले Terminal में देख लें कि `codex` कमांड उपलब्ध है या नहीं।",
+        "codex_connected_detail": "आपका लॉगिन ठीक है।",
+        "codex_login_detail": "पहले लॉग इन करना जरूरी है।",
+        "ready_status": "तारीख चुनकर `Create` दबाएं, फिर डायरी सीधे ऐप के अंदर खुल जाएगी।",
+        "macos_only": "Codex कनेक्शन सीधे सिर्फ macOS पर शुरू किया जा सकता है।",
+        "cancel_none": "अभी कोई जनरेशन चल नहीं रही है।",
+        "cancelling": "मौजूदा जनरेशन रद्द की जा रही है।",
+        "already_connected": "Codex पहले से कनेक्ट है।",
+        "terminal_opened": "Terminal में Codex लॉगिन विंडो खोल दी गई है। पूरा करने के बाद स्टेटस फिर से जांचिए।",
+        "connect_required": "पहले Codex कनेक्ट करें।",
+        "generation_in_progress": "एक जनरेशन पहले से चल रही है।",
+        "missing_saved_diary": "{date} के लिए सेव की गई डायरी नहीं मिली।",
+    },
+}
+
 
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -175,6 +405,11 @@ def ui_assets_dir() -> Path:
         if bundled.exists():
             return bundled
     return Path(__file__).resolve().parent / "ui"
+
+
+def bridge_copy(output_language_code: str | None) -> dict[str, str]:
+    code = normalize_language_code(output_language_code) or DEFAULT_LANGUAGE_CODE
+    return BRIDGE_COPY.get(code, BRIDGE_COPY[DEFAULT_LANGUAGE_CODE])
 
 
 def _heading_candidates(heading: str | tuple[str, ...] | list[str] | set[str]) -> tuple[str, ...]:
@@ -315,6 +550,33 @@ def weekly_overview_copy(output_language_code: str | None) -> dict[str, str]:
     return WEEKLY_OVERVIEW_COPY.get(code, WEEKLY_OVERVIEW_COPY[DEFAULT_LANGUAGE_CODE])
 
 
+def system_notification_copy(output_language_code: str | None) -> dict[str, str]:
+    code = normalize_language_code(output_language_code) or DEFAULT_LANGUAGE_CODE
+    return SYSTEM_NOTIFICATION_COPY.get(code, SYSTEM_NOTIFICATION_COPY[DEFAULT_LANGUAGE_CODE])
+
+
+def native_notification_delegate_class(NSObject, NSApplication):
+    global _NOTIFICATION_DELEGATE_CLASS
+    if _NOTIFICATION_DELEGATE_CLASS is not None:
+        return _NOTIFICATION_DELEGATE_CLASS
+
+    class CodexDiaryNotificationDelegate(NSObject):  # type: ignore[misc, valid-type]
+        def userNotificationCenter_shouldPresentNotification_(self, center, notification):  # noqa: N802
+            return True
+
+        def userNotificationCenter_didActivateNotification_(self, center, notification):  # noqa: N802
+            try:
+                NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            finally:
+                try:
+                    center.removeDeliveredNotification_(notification)
+                except Exception:
+                    pass
+
+    _NOTIFICATION_DELEGATE_CLASS = CodexDiaryNotificationDelegate
+    return _NOTIFICATION_DELEGATE_CLASS
+
+
 def group_diary_files_by_week(
     diary_files: list[tuple[date, Path]],
 ) -> list[tuple[date, date, list[tuple[date, Path]]]]:
@@ -356,13 +618,58 @@ def build_weekly_overview(
 
     for index, (entry_date, path) in enumerate(week_items):
         content = path.read_text(encoding="utf-8").strip()
+        summary, tags = weekly_entry_snapshot(content, copy["no_content"])
         lines.append(f"### {entry_date.isoformat()}")
         lines.append("")
-        lines.append(content or copy["no_content"])
+        lines.append(summary)
+        if tags:
+            lines.extend(["", " ".join(f"#{tag}" for tag in tags[:4])])
         if index != len(week_items) - 1:
             lines.extend(["", "---", ""])
     lines.append("")
     return "\n".join(lines)
+
+
+FIRST_SENTENCE_RE = re.compile(r"[^。.!?\n]+[。.!?]?")
+
+
+def first_sentence(text: str) -> str:
+    cleaned = " ".join((text or "").split()).strip()
+    if not cleaned:
+        return ""
+    match = FIRST_SENTENCE_RE.match(cleaned)
+    return (match.group(0) if match else cleaned).strip()
+
+
+def fallback_weekly_summary(markdown: str, no_content: str) -> str:
+    lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+    if not lines:
+        return no_content
+    for line in lines:
+        if line.startswith("# "):
+            return line[2:].strip() or no_content
+    for line in lines:
+        if line.startswith(("## ", "### ", "#### ", "<!--")):
+            continue
+        if line.startswith("> "):
+            return first_sentence(line[2:].strip()) or no_content
+        return first_sentence(line) or no_content
+    return no_content
+
+
+def weekly_entry_snapshot(markdown: str, no_content: str) -> tuple[str, list[str]]:
+    structured = structure_diary(markdown)
+    candidates = [
+        structured["report"]["today"],
+        structured["report"]["reflection"],
+        *(structured["diary"][:1] if structured["diary"] else []),
+        structured["intro_quote"],
+    ]
+    for candidate in candidates:
+        summary = first_sentence(candidate)
+        if summary:
+            return summary, structured.get("tags") or []
+    return fallback_weekly_summary(markdown, no_content), structured.get("tags") or []
 
 
 def open_path(path: Path) -> None:
@@ -398,6 +705,25 @@ def list_saved_entries(out_dir: Path) -> dict[str, list[dict[str, str]]]:
     }
 
 
+def build_readiness(source_dir: Path, out_dir: Path) -> dict[str, Any]:
+    source = source_dir.expanduser()
+    output = out_dir.expanduser()
+    source_count = 0
+    source_exists = source.exists() and source.is_dir()
+    if source_exists:
+        try:
+            source_count = sum(1 for _ in source.glob("*.md"))
+        except OSError:
+            source_count = 0
+    return {
+        "source_dir": str(source),
+        "source_exists": source_exists,
+        "source_markdown_count": source_count,
+        "out_dir": str(output),
+        "out_exists": output.exists() and output.is_dir(),
+    }
+
+
 @dataclass
 class AppConfig:
     target_date: date
@@ -406,6 +732,7 @@ class AppConfig:
     out_dir: Path
     output_language_code: str
     diary_length_code: str
+    codex_model: str
 
     def to_json(self) -> dict[str, Any]:
         language = get_language_option(self.output_language_code)
@@ -419,6 +746,7 @@ class AppConfig:
             "output_language": language.label,
             "diary_length_code": diary_length.code,
             "diary_length": diary_length.label,
+            "codex_model": self.codex_model,
         }
 
 
@@ -433,11 +761,13 @@ class DiaryBridge:
             out_dir=default_output_dir(),
             output_language_code=DEFAULT_LANGUAGE_CODE,
             diary_length_code=DEFAULT_DIARY_LENGTH_CODE,
+            codex_model=default_codex_model(),
         )
         self._generation_lock = threading.Lock()
         self._progress_lock = threading.Lock()
         self._cancel_requested = threading.Event()
         self._window = None
+        self._notification_delegate = None
         self._progress = self._build_progress_snapshot(
             status="idle",
             phase=None,
@@ -548,26 +878,29 @@ class DiaryBridge:
 
     def _codex_status_details(self) -> dict[str, Any]:
         status = get_codex_status()
+        copy = bridge_copy(self.config.output_language_code)
         connectable = status.available and sys.platform == "darwin"
         if not status.available:
-            detail = "터미널에서 `codex` 명령이 보이는지 먼저 확인해 주세요."
+            detail = copy["codex_terminal"]
         elif status.connected:
-            detail = status.raw_output or "로그인 상태가 정상이에요."
+            detail = status.raw_output or copy["codex_connected_detail"]
         else:
-            detail = status.raw_output or "로그인이 필요해요."
+            detail = status.raw_output or copy["codex_login_detail"]
         return {
             "available": status.available,
             "connected": status.connected,
             "connectable": connectable,
-            "message": "Codex에 연결되어 있어요." if status.connected else status.message or CODEX_NOT_CONNECTED_MESSAGE,
+            "message": copy["already_connected"] if status.connected else copy["connect_required"],
             "detail": detail,
             "command": status.command,
             "auth_mode": status.auth_mode,
+            "configured_model": status.configured_model,
+            "selected_model": self.config.codex_model,
         }
 
     def _launch_codex_device_auth(self) -> None:
         if sys.platform != "darwin":
-            raise RuntimeError("Codex 연결은 macOS에서만 바로 시작할 수 있어요.")
+            raise RuntimeError(bridge_copy(self.config.output_language_code)["macos_only"])
         command = shlex.join(codex_login_command_args(device_auth=True))
         script = (
             'tell application "Terminal"\n'
@@ -577,15 +910,73 @@ class DiaryBridge:
         )
         subprocess.Popen(["osascript", "-e", script], start_new_session=True)
 
+    def _show_native_system_notification(self, *, title: str, message: str) -> bool:
+        if sys.platform != "darwin":
+            return False
+        try:
+            from AppKit import (  # type: ignore[import-not-found]
+                NSApplication,
+                NSUserNotification,
+                NSUserNotificationCenter,
+                NSUserNotificationDefaultSoundName,
+            )
+            from Foundation import NSObject  # type: ignore[import-not-found]
+        except Exception:
+            return False
+
+        if self._notification_delegate is None:
+            delegate_class = native_notification_delegate_class(NSObject, NSApplication)
+            self._notification_delegate = delegate_class.alloc().init()
+
+        try:
+            center = NSUserNotificationCenter.defaultUserNotificationCenter()
+            center.setDelegate_(self._notification_delegate)
+            notification = NSUserNotification.alloc().init()
+            notification.setTitle_(title)
+            notification.setInformativeText_(message)
+            notification.setSoundName_(NSUserNotificationDefaultSoundName)
+            if hasattr(notification, "setHasActionButton_"):
+                notification.setHasActionButton_(False)
+            center.deliverNotification_(notification)
+            return True
+        except Exception:
+            return False
+
+    def _show_system_notification(self, *, title: str, message: str) -> None:
+        # Avoid AppleScript notifications: clicking those can focus Script Editor
+        # or osascript instead of the packaged Codex Diary app.
+        self._show_native_system_notification(title=title, message=message)
+
+    def _notify_generation_result(
+        self,
+        *,
+        success: bool,
+        target_date: str,
+        output_language_code: str | None,
+    ) -> None:
+        copy = system_notification_copy(output_language_code)
+        if success:
+            self._show_system_notification(
+                title=copy["ready_title"],
+                message=copy["ready_message"].format(date=target_date),
+            )
+            return
+        self._show_system_notification(
+            title=copy["failed_title"],
+            message=copy["failed_message"].format(date=target_date),
+        )
+
     # ---- Read-only helpers ---------------------------------------------
     def get_state(self) -> dict[str, Any]:
         codex = self._codex_status_details()
+        copy = bridge_copy(self.config.output_language_code)
         return {
             "config": self.config.to_json(),
             "entries": list_saved_entries(self.config.out_dir),
-            "status": codex["message"] if not codex["connected"] else "날짜를 고르고 `생성`을 누르면 앱 안에서 바로 일기를 볼 수 있습니다.",
+            "status": codex["message"] if not codex["connected"] else copy["ready_status"],
             "codex": codex,
             "progress": self._current_progress(),
+            "readiness": build_readiness(self.config.source_dir, self.config.out_dir),
             "generation_available": codex["connected"],
             "supported_output_languages": [
                 {"code": code, "label": get_language_option(code).label}
@@ -595,11 +986,20 @@ class DiaryBridge:
                 {"code": code, "label": get_diary_length_option(code).label}
                 for code in supported_diary_length_codes()
             ],
+            "supported_codex_models": [
+                {"code": code, "label": code}
+                for code in SUPPORTED_CODEX_MODELS
+            ],
         }
 
     def list_entries(self, out_dir: str | None = None) -> dict[str, Any]:
         directory = Path(out_dir).expanduser() if out_dir else self.config.out_dir
         return list_saved_entries(directory)
+
+    def readiness(self, source_dir: str | None = None, out_dir: str | None = None) -> dict[str, Any]:
+        source = Path(source_dir).expanduser() if source_dir else self.config.source_dir
+        output = Path(out_dir).expanduser() if out_dir else self.config.out_dir
+        return build_readiness(source, output)
 
     def today(self, boundary_hour: int) -> str:
         try:
@@ -665,11 +1065,12 @@ class DiaryBridge:
         return False
 
     def cancel_generation(self) -> dict[str, Any]:
+        copy = bridge_copy(self.config.output_language_code)
         if not self._generation_lock.locked():
             return {
                 "cancelled": False,
                 "progress": self._current_progress(),
-                "message": "진행 중인 생성 작업이 없어요.",
+                "message": copy["cancel_none"],
             }
         self._cancel_requested.set()
         current = self._current_progress()
@@ -691,22 +1092,29 @@ class DiaryBridge:
         return {
             "cancelled": False,
             "progress": progress,
-            "message": "생성을 취소하는 중이에요.",
+            "message": copy["cancelling"],
         }
 
     def connect_codex(self) -> dict[str, Any]:
+        copy = bridge_copy(self.config.output_language_code)
         status = self._codex_status_details()
         if status["connected"]:
             return {
                 "codex": status,
                 "connected": True,
-                "message": "이미 Codex에 연결되어 있어요.",
+                "message": copy["already_connected"],
+            }
+        if not status["available"]:
+            return {
+                "codex": status,
+                "connected": False,
+                "error": status["detail"],
             }
         if not status["connectable"]:
             return {
                 "codex": status,
                 "connected": False,
-                "error": "Codex 연결은 macOS에서만 바로 시작할 수 있어요.",
+                "error": copy["macos_only"],
             }
         try:
             self._launch_codex_device_auth()
@@ -719,12 +1127,13 @@ class DiaryBridge:
         return {
             "codex": self._codex_status_details(),
             "connected": False,
-            "message": "Terminal에서 Codex 로그인 창을 열었어요. 완료한 뒤 상태를 다시 확인해 주세요.",
+            "message": copy["terminal_opened"],
         }
 
     # ---- Generation & loading ------------------------------------------
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = self._coerce_request(payload)
+        copy = bridge_copy(request["output_language_code"])
         codex = self._codex_status_details()
         if not codex["connected"]:
             progress = self._update_progress(
@@ -734,17 +1143,17 @@ class DiaryBridge:
                 target_date=request["target_date"].isoformat(),
                 output_language_code=request["output_language_code"],
                 mode=request["mode"],
-                error="먼저 codex를 연결해주세요.",
+                error=copy["connect_required"],
             )
             return {
-                "error": "먼저 codex를 연결해주세요.",
+                "error": copy["connect_required"],
                 "codex": codex,
                 "generation_available": False,
                 "progress": progress,
             }
         if not self._generation_lock.acquire(blocking=False):
             return {
-                "error": "이미 생성이 진행 중입니다.",
+                "error": copy["generation_in_progress"],
                 "progress": self._current_progress(),
             }
         try:
@@ -755,6 +1164,7 @@ class DiaryBridge:
             self.config.out_dir = request["out_dir"]
             self.config.output_language_code = request["output_language_code"]
             self.config.diary_length_code = request["diary_length_code"]
+            self.config.codex_model = request["codex_model"]
             target_date_iso = request["target_date"].isoformat()
 
             def report_progress(update: dict[str, Any]) -> dict[str, Any]:
@@ -796,9 +1206,12 @@ class DiaryBridge:
                 day_boundary_hour=request["boundary_hour"],
                 output_language=request["output_language_code"],
                 diary_length=request["diary_length_code"],
+                codex_model=request["codex_model"],
                 progress=report_progress,
                 should_cancel=self._cancel_requested.is_set,
             )
+            if self._cancel_requested.is_set():
+                raise GenerationCancelledError("생성을 취소했어요.")
             saved_path: Optional[Path] = None
             if request["auto_save"]:
                 report_progress(
@@ -817,6 +1230,11 @@ class DiaryBridge:
                 saved_path = result.output_path
 
             payload = render_payload(result.markdown, output_language_code=request["output_language_code"])
+            saved_mtime = (
+                datetime.fromtimestamp(saved_path.stat().st_mtime).isoformat(timespec="seconds")
+                if saved_path and saved_path.exists()
+                else None
+            )
             completed_progress = report_progress(
                 {
                     "status": "completed",
@@ -833,12 +1251,19 @@ class DiaryBridge:
                     "stats": dict(result.stats),
                     "warnings": list(result.warnings),
                     "saved_path": str(saved_path) if saved_path else None,
+                    "saved_mtime": saved_mtime,
                     "output_language_code": request["output_language_code"],
                     "output_language": get_language_option(request["output_language_code"]).label,
                     "diary_length_code": request["diary_length_code"],
                     "diary_length": get_diary_length_option(request["diary_length_code"]).label,
+                    "codex_model": request["codex_model"],
                     "progress": completed_progress,
                 }
+            )
+            self._notify_generation_result(
+                success=True,
+                target_date=result.target_date.isoformat(),
+                output_language_code=request["output_language_code"],
             )
             return payload
         except GenerationCancelledError as exc:
@@ -880,6 +1305,12 @@ class DiaryBridge:
                 indeterminate=False,
                 error=str(exc),
             )
+            if current.get("phase") in {"write", "finish"}:
+                self._notify_generation_result(
+                    success=False,
+                    target_date=request["target_date"].isoformat(),
+                    output_language_code=request["output_language_code"],
+                )
             return {"error": str(exc), "progress": failed_progress}
         finally:
             self._cancel_requested.clear()
@@ -889,11 +1320,17 @@ class DiaryBridge:
         directory = Path(out_dir).expanduser() if out_dir else self.config.out_dir
         path = directory / f"{iso}.md"
         if not path.exists():
-            return {"error": f"{iso} 날짜의 저장된 일기를 찾지 못했습니다."}
+            return {"error": bridge_copy(self.config.output_language_code)["missing_saved_diary"].format(date=iso)}
         markdown = path.read_text(encoding="utf-8")
         payload = render_payload(markdown)
         self.config.output_language_code = payload["output_language_code"]
-        payload.update({"target_date": iso, "saved_path": str(path)})
+        payload.update(
+            {
+                "target_date": iso,
+                "saved_path": str(path),
+                "saved_mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+            }
+        )
         return payload
 
     def load_week(
@@ -936,9 +1373,7 @@ class DiaryBridge:
         except (TypeError, ValueError):
             boundary = 4
         boundary = max(0, min(23, boundary))
-        mode = payload.get("mode") or "finalize"
-        if mode not in {"finalize", "draft-update"}:
-            mode = "finalize"
+        mode = "finalize"
         source_dir = Path(str(payload.get("source_dir") or DEFAULT_SOURCE_DIR)).expanduser()
         out_dir = Path(str(payload.get("out_dir") or default_output_dir())).expanduser()
         language_code = None
@@ -966,6 +1401,18 @@ class DiaryBridge:
             diary_length_code = normalize_diary_length(payload.get(key))
             if diary_length_code:
                 break
+        codex_model = None
+        for key in (
+            "codex_model",
+            "model",
+            "llm_model",
+        ):
+            try:
+                codex_model = normalize_codex_model(payload.get(key))
+            except Exception:
+                codex_model = None
+            if codex_model:
+                break
         target_date = resolve_target_date(iso, day_boundary_hour=boundary)
         return {
             "target_date": target_date,
@@ -976,6 +1423,7 @@ class DiaryBridge:
             "auto_save": bool(payload.get("auto_save", True)),
             "output_language_code": language_code or DEFAULT_LANGUAGE_CODE,
             "diary_length_code": diary_length_code or DEFAULT_DIARY_LENGTH_CODE,
+            "codex_model": codex_model or default_codex_model(),
         }
 
 

@@ -1,3 +1,0 @@
-
-[macos-build]
-pyinstaller<7,>=6.11

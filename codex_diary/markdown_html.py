@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import re
 from typing import List
+from urllib.parse import urlsplit
 
 
 INLINE_CODE_RE = re.compile(r"`([^`]+)`")
@@ -22,13 +23,27 @@ def _escape(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+def _escape_attr(text: str) -> str:
+    return html.escape(text, quote=True)
+
+
+def _safe_link_href(raw_href: str) -> str:
+    href = html.unescape(raw_href).strip()
+    if not href:
+        return "#"
+    parsed = urlsplit(href)
+    if parsed.scheme and parsed.scheme.lower() not in {"http", "https", "mailto"}:
+        return "#"
+    return _escape_attr(href)
+
+
 def _apply_inline(text: str) -> str:
     escaped = _escape(text)
     escaped = INLINE_CODE_RE.sub(lambda m: f"<code>{m.group(1)}</code>", escaped)
     escaped = BOLD_RE.sub(lambda m: f"<strong>{m.group(1)}</strong>", escaped)
     escaped = ITALIC_RE.sub(lambda m: f"<em>{m.group(1)}</em>", escaped)
     escaped = LINK_RE.sub(
-        lambda m: f'<a href="{_escape(m.group(2))}" target="_blank" rel="noopener">{m.group(1)}</a>',
+        lambda m: f'<a href="{_safe_link_href(m.group(2))}" target="_blank" rel="noopener">{m.group(1)}</a>',
         escaped,
     )
     return escaped
@@ -76,7 +91,7 @@ def render_markdown(markdown: str) -> str:
         if in_code:
             if line.strip().startswith("```"):
                 joined = "\n".join(code_buffer)
-                lang_attr = f' class="lang-{_escape(code_lang)}"' if code_lang else ""
+                lang_attr = f' class="lang-{_escape_attr(code_lang)}"' if code_lang else ""
                 out.append(f"<pre><code{lang_attr}>{_escape(joined)}</code></pre>")
                 code_buffer.clear()
                 code_lang = ""

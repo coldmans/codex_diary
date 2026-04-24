@@ -1,14 +1,17 @@
+import plistlib
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from codex_diary.package_macos import (
+    BUNDLE_IDENTIFIER,
     app_bundle_path,
     auxiliary_dist_path,
     cleanup_packaging_artifacts,
     default_app_icon_source,
     default_dmg_name,
     sanitize_artifact_name,
+    update_app_bundle_metadata,
 )
 
 
@@ -30,6 +33,23 @@ class MacOSPackagingTests(unittest.TestCase):
         path = default_app_icon_source()
         self.assertEqual(path.name, "app-icon.png")
         self.assertTrue(str(path).endswith("codex_diary/ui/assets/app-icon.png"))
+
+    def test_update_app_bundle_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            app = Path(tmp) / "Codex Diary.app"
+            contents = app / "Contents"
+            contents.mkdir(parents=True)
+            info_path = contents / "Info.plist"
+            with info_path.open("wb") as handle:
+                plistlib.dump({"CFBundleIdentifier": "Codex Diary"}, handle)
+
+            update_app_bundle_metadata(app, app_name="Codex Diary", version="0.1.0")
+
+            with info_path.open("rb") as handle:
+                info = plistlib.load(handle)
+            self.assertEqual(info["CFBundleIdentifier"], BUNDLE_IDENTIFIER)
+            self.assertEqual(info["CFBundleShortVersionString"], "0.1.0")
+            self.assertEqual(info["CFBundleVersion"], "0.1.0")
 
     def test_cleanup_packaging_artifacts(self) -> None:
         with TemporaryDirectory() as tmp:
