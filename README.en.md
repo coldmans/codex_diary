@@ -92,6 +92,33 @@ pip install -e .
 python3 -m codex_diary.app
 ```
 
+## Notarized Release Build
+
+After joining the Apple Developer Program, install a `Developer ID Application` certificate in your keychain.
+
+```bash
+security find-identity -v -p codesigning
+```
+
+Store notarytool credentials once:
+
+```bash
+xcrun notarytool store-credentials codex-diary-notary \
+  --apple-id "you@example.com" \
+  --team-id "TEAMID" \
+  --password "app-specific-password"
+```
+
+Build a signed, notarized, stapled DMG and refresh the Homebrew Cask checksum:
+
+```bash
+python3 -m codex_diary.package_macos \
+  --sign-identity "Developer ID Application: Your Name (TEAMID)" \
+  --notarize \
+  --notary-keychain-profile codex-diary-notary \
+  --write-homebrew-cask
+```
+
 Run checks:
 
 ```bash

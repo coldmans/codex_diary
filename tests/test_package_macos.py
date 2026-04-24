@@ -2,12 +2,14 @@ import plistlib
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from codex_diary.package_macos import (
     BUNDLE_IDENTIFIER,
     app_bundle_path,
     auxiliary_dist_path,
     build_homebrew_cask_text,
+    build_notarytool_submit_command,
     calculate_sha256,
     cleanup_packaging_artifacts,
     default_app_icon_source,
@@ -15,10 +17,13 @@ from codex_diary.package_macos import (
     github_release_dmg_url,
     homebrew_cask_filename,
     homebrew_cask_token,
+    notary_credential_args,
     opening_instructions_filename,
     opening_instructions_text,
     prepare_dmg_staging,
     sanitize_artifact_name,
+    sign_app_bundle,
+    staple_artifact,
     update_app_bundle_metadata,
     write_homebrew_cask,
 )
@@ -67,8 +72,22 @@ class MacOSPackagingTests(unittest.TestCase):
         self.assertIn('cask "codex-diary" do', text)
         self.assertIn('sha256 "abc123"', text)
         self.assertIn("releases/download/v#{version}/Codex-Diary-#{version}-macOS.dmg", text)
-        self.assertIn("Control-click the app in Finder and choose Open", text)
+        self.assertIn('xattr",', text)
+        self.assertIn("com.apple.quarantine", text)
         self.assertIn('app "Codex Diary.app"', text)
+
+    def test_build_homebrew_cask_text_omits_quarantine_for_notarized_build(self) -> None:
+        text = build_homebrew_cask_text(
+            app_name="Codex Diary",
+            version="0.1.0",
+            sha256="abc123",
+            github_repository="coldmans/codex_diary",
+            notarized=True,
+        )
+
+        self.assertIn('cask "codex-diary" do', text)
+        self.assertNotIn("postflight", text)
+        self.assertNotIn("com.apple.quarantine", text)
 
     def test_write_homebrew_cask(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -82,6 +101,97 @@ class MacOSPackagingTests(unittest.TestCase):
 
             self.assertEqual(path.name, "codex-diary.rb")
             self.assertIn('version "0.1.0"', path.read_text(encoding="utf-8"))
+
+    def test_notary_credential_args_prefers_keychain_profile(self) -> None:
+        self.assertEqual(
+            notary_credential_args(
+                keychain_profile="codex-diary-notary",
+                apple_id="ignored@example.com",
+                team_id="IGNORED",
+                password="ignored",
+            ),
+            ["--keychain-profile", "codex-diary-notary"],
+        )
+
+    def test_notary_credential_args_supports_apple_credentials(self) -> None:
+        self.assertEqual(
+            notary_credential_args(
+                apple_id="me@example.com",
+                team_id="TEAMID1234",
+                password="app-password",
+            ),
+            [
+                "--apple-id",
+                "me@example.com",
+                "--team-id",
+                "TEAMID1234",
+                "--password",
+                "app-password",
+            ],
+        )
+
+    def test_notary_credential_args_requires_complete_credentials(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            with self.assertRaises(RuntimeError):
+                notary_credential_args(apple_id="me@example.com")
+
+    def test_build_notarytool_submit_command(self) -> None:
+        command = build_notarytool_submit_command(
+            Path("/tmp/Codex-Diary.dmg"),
+            keychain_profile="codex-diary-notary",
+        )
+
+        self.assertEqual(
+            command,
+            [
+                "xcrun",
+                "notarytool",
+                "submit",
+                "/tmp/Codex-Diary.dmg",
+                "--wait",
+                "--keychain-profile",
+                "codex-diary-notary",
+            ],
+        )
+
+    def test_sign_app_bundle_uses_developer_id_runtime_options(self) -> None:
+        with patch("codex_diary.package_macos.run_command") as run:
+            sign_app_bundle(
+                Path("/tmp/Codex Diary.app"),
+                sign_identity="Developer ID Application: Example (TEAMID1234)",
+            )
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            [
+                "codesign",
+                "--force",
+                "--deep",
+                "--options",
+                "runtime",
+                "--timestamp",
+                "--sign",
+                "Developer ID Application: Example (TEAMID1234)",
+                "/tmp/Codex Diary.app",
+            ],
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["codesign", "--verify", "--deep", "--strict", "--verbose=2", "/tmp/Codex Diary.app"],
+        )
+
+    def test_staple_artifact_staples_and_validates(self) -> None:
+        with patch("codex_diary.package_macos.run_command") as run:
+            staple_artifact(Path("/tmp/Codex-Diary.dmg"))
+
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                ["xcrun", "stapler", "staple", "/tmp/Codex-Diary.dmg"],
+                ["xcrun", "stapler", "validate", "/tmp/Codex-Diary.dmg"],
+            ],
+        )
 
     def test_app_bundle_path(self) -> None:
         self.assertEqual(app_bundle_path(Path("/tmp/dist"), "Codex Diary"), Path("/tmp/dist/Codex Diary.app"))
