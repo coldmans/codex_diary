@@ -29,12 +29,29 @@ Before creating diaries, turn on `Chronicle research preview` in Codex settings.
 
 ## Install
 
+First install:
+
 ```bash
 brew tap coldmans/codex-diary https://github.com/coldmans/codex_diary
 brew install --cask codex-diary
 ```
 
 Then open `Codex Diary.app`, connect Codex if needed, choose a date, and create the entry.
+
+If you installed it before and want to test from a clean install:
+
+```bash
+brew uninstall --cask codex-diary --force
+brew untap coldmans/codex-diary
+brew tap coldmans/codex-diary https://github.com/coldmans/codex_diary
+brew install --cask codex-diary
+```
+
+If macOS still blocks first launch, run this once and open the app again:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Codex Diary.app"
+```
 
 ## What It Creates
 

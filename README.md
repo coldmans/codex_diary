@@ -29,12 +29,29 @@ Codex Diary는 Chronicle 요약 Markdown만 읽습니다. 원본 화면 녹화, 
 
 ## 설치
 
+처음 설치:
+
 ```bash
 brew tap coldmans/codex-diary https://github.com/coldmans/codex_diary
 brew install --cask codex-diary
 ```
 
 설치 후 `Codex Diary.app`을 열고, 필요하면 Codex를 연결한 뒤 날짜를 선택해서 일기를 생성하면 됩니다.
+
+이미 설치한 적이 있고 처음부터 다시 확인하고 싶다면:
+
+```bash
+brew uninstall --cask codex-diary --force
+brew untap coldmans/codex-diary
+brew tap coldmans/codex-diary https://github.com/coldmans/codex_diary
+brew install --cask codex-diary
+```
+
+설치 후 macOS가 앱을 막으면 아래 명령을 한 번 실행한 뒤 다시 열어 주세요.
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Codex Diary.app"
+```
 
 ## 생성 결과
 
