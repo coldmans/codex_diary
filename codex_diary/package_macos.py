@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import plistlib
 import shutil
@@ -12,6 +13,7 @@ from . import __version__
 
 APP_NAME = "Codex Diary"
 BUNDLE_IDENTIFIER = "io.github.coldmans.codex-diary"
+DEFAULT_GITHUB_REPOSITORY = "coldmans/codex_diary"
 ICONSET_SPECS = (
     ("icon_16x16.png", 16),
     ("icon_16x16@2x.png", 32),
@@ -45,6 +47,10 @@ def default_build_dir() -> Path:
     return repository_root() / "build" / "macos"
 
 
+def default_homebrew_cask_dir() -> Path:
+    return repository_root() / "Casks"
+
+
 def default_app_icon_source() -> Path:
     return repository_root() / "codex_diary" / "ui" / "assets" / "app-icon.png"
 
@@ -53,12 +59,114 @@ def default_dmg_name(app_name: str, version: str) -> str:
     return f"{sanitize_artifact_name(app_name)}-{version}-macOS.dmg"
 
 
+def homebrew_cask_token(app_name: str) -> str:
+    return sanitize_artifact_name(app_name).lower()
+
+
+def homebrew_cask_filename(app_name: str) -> str:
+    return f"{homebrew_cask_token(app_name)}.rb"
+
+
+def github_release_dmg_url(*, github_repository: str, app_name: str, version: str) -> str:
+    repository = github_repository.strip().strip("/")
+    return f"https://github.com/{repository}/releases/download/v{version}/{default_dmg_name(app_name, version)}"
+
+
+def calculate_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_homebrew_cask_text(
+    *,
+    app_name: str,
+    version: str,
+    sha256: str,
+    github_repository: str = DEFAULT_GITHUB_REPOSITORY,
+    bundle_identifier: str = BUNDLE_IDENTIFIER,
+) -> str:
+    repository = github_repository.strip().strip("/")
+    token = homebrew_cask_token(app_name)
+    url = github_release_dmg_url(
+        github_repository=repository,
+        app_name=app_name,
+        version="#{version}",
+    )
+    return (
+        f'cask "{token}" do\n'
+        f'  version "{version}"\n'
+        f'  sha256 "{sha256}"\n'
+        "\n"
+        f'  url "{url}",\n'
+        f'      verified: "github.com/{repository}/"\n'
+        f'  name "{app_name}"\n'
+        '  desc "Generate diary drafts from Chronicle Markdown summaries"\n'
+        f'  homepage "https://github.com/{repository}"\n'
+        "\n"
+        f'  app "{app_name}.app"\n'
+        "\n"
+        "  caveats <<~EOS\n"
+        f"    {app_name} is currently distributed as an unsigned macOS build.\n"
+        "    If macOS blocks first launch, Control-click the app in Finder and choose Open.\n"
+        "  EOS\n"
+        "\n"
+        "  zap trash: [\n"
+        f'    "~/Library/Application Support/{app_name}",\n'
+        f'    "~/Library/Caches/{bundle_identifier}",\n'
+        f'    "~/Library/Preferences/{bundle_identifier}.plist",\n'
+        "  ]\n"
+        "end\n"
+    )
+
+
+def write_homebrew_cask(
+    *,
+    cask_dir: Path,
+    app_name: str,
+    version: str,
+    sha256: str,
+    github_repository: str = DEFAULT_GITHUB_REPOSITORY,
+) -> Path:
+    cask_dir.mkdir(parents=True, exist_ok=True)
+    cask_path = cask_dir / homebrew_cask_filename(app_name)
+    cask_path.write_text(
+        build_homebrew_cask_text(
+            app_name=app_name,
+            version=version,
+            sha256=sha256,
+            github_repository=github_repository,
+        ),
+        encoding="utf-8",
+    )
+    return cask_path
+
+
 def app_bundle_path(dist_dir: Path, app_name: str) -> Path:
     return dist_dir / f"{app_name}.app"
 
 
 def auxiliary_dist_path(dist_dir: Path, app_name: str) -> Path:
     return dist_dir / app_name
+
+
+def opening_instructions_filename() -> str:
+    return "If macOS blocks opening.txt"
+
+
+def opening_instructions_text(app_name: str) -> str:
+    return (
+        f"{app_name} is currently distributed as an unsigned macOS build.\n\n"
+        "If macOS says Apple cannot check the app for malicious software:\n\n"
+        "1. Drag the app to Applications.\n"
+        "2. In Finder, Control-click the app and choose Open.\n"
+        "3. Click Open in the confirmation dialog.\n\n"
+        "Alternative for advanced users:\n\n"
+        f"xattr -dr com.apple.quarantine \"/Applications/{app_name}.app\"\n\n"
+        "A future notarized release can remove this warning, but that requires an Apple Developer ID certificate.\n"
+    )
 
 
 def update_app_bundle_metadata(
@@ -208,6 +316,9 @@ def prepare_dmg_staging(app_bundle: Path, staging_dir: Path) -> Path:
     if applications_link.exists() or applications_link.is_symlink():
         applications_link.unlink()
     applications_link.symlink_to("/Applications")
+
+    instructions = staging_dir / opening_instructions_filename()
+    instructions.write_text(opening_instructions_text(app_bundle.stem), encoding="utf-8")
     return copied_bundle
 
 
@@ -278,6 +389,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="DMG 생성은 건너뛰고 .app 번들까지만 만듭니다.",
     )
+    parser.add_argument(
+        "--write-homebrew-cask",
+        action="store_true",
+        help="생성된 DMG SHA256을 사용해 Homebrew Cask 파일도 갱신합니다.",
+    )
+    parser.add_argument(
+        "--homebrew-cask-dir",
+        default=str(default_homebrew_cask_dir()),
+        help="Homebrew Cask 파일을 저장할 폴더입니다.",
+    )
+    parser.add_argument(
+        "--github-repository",
+        default=DEFAULT_GITHUB_REPOSITORY,
+        help="릴리즈 DMG URL에 사용할 GitHub 저장소입니다. 예: owner/repo",
+    )
     return parser
 
 
@@ -312,6 +438,17 @@ def run(argv: list[str] | None = None) -> int:
         volume_name=app_name,
     )
     print(f"DMG를 생성했습니다: {dmg_path}")
+    dmg_sha256 = calculate_sha256(dmg_path)
+    print(f"DMG SHA256: {dmg_sha256}")
+    if args.write_homebrew_cask:
+        cask_path = write_homebrew_cask(
+            cask_dir=Path(args.homebrew_cask_dir).expanduser().resolve(),
+            app_name=app_name,
+            version=__version__,
+            sha256=dmg_sha256,
+            github_repository=args.github_repository,
+        )
+        print(f"Homebrew Cask를 갱신했습니다: {cask_path}")
     cleanup_packaging_artifacts(dist_dir=dist_dir, build_dir=build_dir, app_name=app_name)
     return 0
 

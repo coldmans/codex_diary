@@ -12,11 +12,26 @@ During generation, selected and redacted Chronicle event snippets are sent to th
 
 English is the source-of-truth README. Localized READMEs may lag slightly when the project changes.
 
-## Download for macOS
+## Install on macOS
+
+Homebrew is the recommended install path for GitHub users:
+
+```bash
+brew tap coldmans/codex-diary https://github.com/coldmans/codex_diary
+brew install --cask codex-diary
+```
+
+Or download the DMG directly:
 
 [Download the latest macOS DMG](https://github.com/coldmans/codex_diary/releases/latest/download/Codex-Diary-0.1.0-macOS.dmg)
 
 After installing, open `Codex Diary.app`, connect Codex if needed, choose the Chronicle summary folder, and create a diary for the selected date. The app is currently distributed as an unsigned macOS build, so macOS may ask you to confirm opening it from System Settings or the Finder context menu.
+
+If macOS says Apple cannot check the app for malicious software, drag the app to Applications, then Control-click `Codex Diary.app` in Finder and choose `Open`. Advanced users can also run:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Codex Diary.app"
+```
 
 ## Why this tool exists
 
@@ -157,6 +172,14 @@ Default artifacts:
 
 - `dist/Codex Diary.app`
 - `dist/Codex-Diary-0.1.0-macOS.dmg`
+
+To refresh the Homebrew Cask after a DMG build:
+
+```bash
+python3 -m codex_diary.package_macos --write-homebrew-cask
+```
+
+That updates `Casks/codex-diary.rb` with the generated DMG checksum. Upload the same DMG to the matching GitHub release tag before users install through Homebrew.
 
 ## Supported diary output languages
 
