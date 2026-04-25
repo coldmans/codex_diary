@@ -75,6 +75,32 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(build_mock.call_args.kwargs["diary_length"], "very-long")
 
+    def test_codex_model_flag_is_forwarded(self) -> None:
+        result = DiaryBuildResult(
+            target_date=date(2026, 4, 21),
+            mode="finalize",
+            markdown="# Sample\n",
+            output_path=Path("/tmp/2026-04-21.md"),
+            used_llm=False,
+            stats={},
+            warnings=(),
+        )
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch("codex_diary.cli.build_diary", return_value=result) as build_mock:
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                exit_code = run(
+                    [
+                        "--date",
+                        "2026-04-21",
+                        "--codex-model",
+                        "gpt-5.5",
+                        "--dry-run",
+                    ]
+                )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(build_mock.call_args.kwargs["codex_model"], "gpt-5.5")
+
     def test_invalid_language_is_rejected(self) -> None:
         stdout = StringIO()
         stderr = StringIO()

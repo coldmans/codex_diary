@@ -112,13 +112,13 @@ class LLMProvider:
 
 
 def find_codex_command() -> Optional[str]:
-    discovered = shutil.which("codex")
-    if discovered:
-        return discovered
     for candidate in COMMON_CODEX_PATHS:
         path = Path(candidate).expanduser()
         if path.exists() and path.is_file():
             return str(path)
+    discovered = shutil.which("codex")
+    if discovered:
+        return discovered
     return None
 
 
@@ -355,6 +355,7 @@ class CodexCliProvider(LLMProvider):
                 self.command,
                 "exec",
                 "--ephemeral",
+                "--ignore-rules",
                 "--skip-git-repo-check",
                 "--sandbox",
                 "read-only",

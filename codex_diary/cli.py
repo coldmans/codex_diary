@@ -11,7 +11,7 @@ from .diary_length import (
     supported_diary_length_codes,
 )
 from .generator import build_diary, legacy_output_paths
-from .llm import CODEX_MISSING_MESSAGE, CODEX_NOT_CONNECTED_MESSAGE, LLMError
+from .llm import CODEX_MISSING_MESSAGE, CODEX_NOT_CONNECTED_MESSAGE, LLMError, normalize_codex_model
 from .i18n import (
     DEFAULT_LANGUAGE_CODE,
     normalize_language_code,
@@ -34,9 +34,11 @@ CLI_COPY = {
         "day_boundary_help": "Local workday boundary hour (default: 4). Must be an integer from 0 to 23.",
         "language_help": "Choose the output language. Supported codes: {codes}. Default: {default}.",
         "length_help": "Choose the diary length. Supported values: {codes}. Default: {default}.",
+        "codex_model_help": "Choose the Codex model for generation, for example gpt-5.5.",
         "error_day_boundary": "--day-boundary-hour must be an integer between 0 and 23.",
         "error_invalid_language": "--language must be a supported language code or name. Supported codes: {codes}",
         "error_invalid_length": "--length must be one of the supported length codes. Supported values: {codes}",
+        "error_invalid_codex_model": "--codex-model must be a valid Codex model name.",
         "error_invalid_date": "--date must be in YYYY-MM-DD format.",
         "error_missing_sources": "Could not find Chronicle summary files for {date}. Check the input folder or use --source-dir.",
         "error_connect_required": "Connect Codex first.",
@@ -55,9 +57,11 @@ CLI_COPY = {
         "day_boundary_help": "하루 경계 시각(로컬 타임존 기준, 기본값: 4). 0~23 사이 정수여야 합니다.",
         "language_help": "출력 언어를 지정합니다. 지원 코드: {codes}. 기본값은 {default}입니다.",
         "length_help": "일기 길이를 지정합니다. 지원 값: {codes}. 기본값은 {default}입니다.",
+        "codex_model_help": "생성에 사용할 Codex 모델을 지정합니다. 예: gpt-5.5",
         "error_day_boundary": "--day-boundary-hour는 0 이상 23 이하의 정수여야 합니다.",
         "error_invalid_language": "--language는 지원되는 언어 코드 또는 이름이어야 합니다. 지원 코드: {codes}",
         "error_invalid_length": "--length는 지원되는 길이 코드여야 합니다. 지원 값: {codes}",
+        "error_invalid_codex_model": "--codex-model은 올바른 Codex 모델 이름이어야 합니다.",
         "error_invalid_date": "--date는 YYYY-MM-DD 형식이어야 합니다.",
         "error_missing_sources": "{date} 기준 Chronicle 요약 파일을 찾지 못했습니다. 입력 폴더를 확인하거나 --source-dir 옵션을 사용해 주세요.",
         "error_connect_required": "먼저 Codex를 연결해 주세요.",
@@ -76,9 +80,11 @@ CLI_COPY = {
         "day_boundary_help": "1日の区切り時刻を指定します（ローカルタイムゾーン基準、デフォルト: 4）。0〜23 の整数である必要があります。",
         "language_help": "出力言語を指定します。対応コード: {codes}。既定値: {default}。",
         "length_help": "日記の長さを指定します。対応値: {codes}。既定値: {default}。",
+        "codex_model_help": "生成に使う Codex モデルを指定します。例: gpt-5.5",
         "error_day_boundary": "--day-boundary-hour は 0 から 23 までの整数である必要があります。",
         "error_invalid_language": "--language には対応している言語コードまたは名前を指定してください。対応コード: {codes}",
         "error_invalid_length": "--length には対応している長さコードを指定してください。対応値: {codes}",
+        "error_invalid_codex_model": "--codex-model には有効な Codex モデル名を指定してください。",
         "error_invalid_date": "--date は YYYY-MM-DD 形式で指定してください。",
         "error_missing_sources": "{date} の Chronicle 要約ファイルが見つかりませんでした。入力フォルダーを確認するか、--source-dir を指定してください。",
         "error_connect_required": "先に Codex を接続してください。",
@@ -97,9 +103,11 @@ CLI_COPY = {
         "day_boundary_help": "设置一天的分界小时（按本地时区，默认值：4）。必须是 0 到 23 之间的整数。",
         "language_help": "指定输出语言。支持的代码：{codes}。默认值：{default}。",
         "length_help": "指定日记长度。支持的值：{codes}。默认值：{default}。",
+        "codex_model_help": "指定生成时使用的 Codex 模型。例如：gpt-5.5。",
         "error_day_boundary": "--day-boundary-hour 必须是 0 到 23 之间的整数。",
         "error_invalid_language": "--language 必须是受支持的语言代码或名称。支持的代码：{codes}",
         "error_invalid_length": "--length 必须是受支持的长度代码之一。支持的值：{codes}",
+        "error_invalid_codex_model": "--codex-model 必须是有效的 Codex 模型名称。",
         "error_invalid_date": "--date 必须使用 YYYY-MM-DD 格式。",
         "error_missing_sources": "找不到 {date} 的 Chronicle 摘要文件。请检查输入文件夹，或使用 --source-dir。",
         "error_connect_required": "请先连接 Codex。",
@@ -338,6 +346,11 @@ def build_parser(language_code: str | None = None) -> argparse.ArgumentParser:
             default=DEFAULT_DIARY_LENGTH_CODE,
         ),
     )
+    parser.add_argument(
+        "--codex-model",
+        default=None,
+        help=copy.get("codex_model_help", CLI_COPY["en"]["codex_model_help"]),
+    )
     return parser
 
 
@@ -379,6 +392,11 @@ def run(argv: list[str] | None = None) -> int:
     if not diary_length_code:
         print(copy["error_invalid_length"].format(codes=", ".join(supported_diary_length_codes())), file=sys.stderr)
         return 2
+    try:
+        codex_model = normalize_codex_model(args.codex_model) if args.codex_model else None
+    except LLMError:
+        print(copy.get("error_invalid_codex_model", CLI_COPY["en"]["error_invalid_codex_model"]), file=sys.stderr)
+        return 2
 
     try:
         target_date = resolve_target_date(
@@ -401,6 +419,7 @@ def run(argv: list[str] | None = None) -> int:
             day_boundary_hour=args.day_boundary_hour,
             output_language=language_code,
             diary_length=diary_length_code,
+            codex_model=codex_model,
         )
     except FileNotFoundError as exc:
         print(

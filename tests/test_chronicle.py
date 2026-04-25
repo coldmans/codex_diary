@@ -47,6 +47,23 @@ class ChronicleParsingTests(unittest.TestCase):
             self.assertEqual(len(matched), 1)
             self.assertEqual(matched[0].path.name, "2026-04-21T18-30-00-abcd-10min-memory-summary.md")
 
+    def test_discover_sources_ignores_symlinked_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outside = root / "outside.md"
+            outside.write_text("x", encoding="utf-8")
+            link = root / "2026-04-21T18-30-00-abcd-10min-memory-summary.md"
+            link.symlink_to(outside)
+
+            matched = discover_sources(
+                root,
+                target_date=datetime(2026, 4, 21).date(),
+                day_boundary_hour=4,
+                local_tz=ZoneInfo("Asia/Seoul"),
+            )
+
+        self.assertEqual(matched, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -337,6 +337,8 @@ class ProcessingTests(unittest.TestCase):
         )
         self.assertIn("Total extracted events: 160", prompt)
         self.assertIn("Prompt events included: 120", prompt)
+        self.assertIn("Untrusted event list:", prompt)
+        self.assertIn("```text", prompt)
         self.assertIn("event 0", prompt)
         self.assertIn("event 159", prompt)
 
@@ -690,6 +692,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertIn("-m", captured_args[0])
         self.assertEqual(captured_args[0][captured_args[0].index("-m") + 1], "gpt-5.4")
         self.assertIn("--ephemeral", captured_args[0])
+        self.assertIn("--ignore-rules", captured_args[0])
         self.assertLess(captured_args[0].index("--ephemeral"), captured_args[0].index("--skip-git-repo-check"))
 
     def test_codex_provider_reports_model_access_error_before_auth_noise(self) -> None:

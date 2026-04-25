@@ -72,6 +72,8 @@ def discover_sources(
 
     parsed_sources = []
     for path in sorted(source_dir.glob("*.md")):
+        if path.is_symlink() or not path.is_file():
+            continue
         try:
             source = parse_source_filename(
                 path,
