@@ -55,6 +55,10 @@ CODEX_MODEL_ERROR_MARKERS = (
     "unsupported model",
     "invalid model",
 )
+CODEX_VERSION_ERROR_MARKERS = (
+    "requires a newer version of codex",
+    "upgrade to the latest app or cli",
+)
 CODEX_TOKEN_REFRESH_MARKERS = (
     "invalid refresh token",
     "invalid_grant",
@@ -286,6 +290,11 @@ def _raise_codex_exec_error(text: str) -> None:
     detail = _codex_error_detail(text)
     if any(marker in normalized for marker in CODEX_MODEL_ERROR_MARKERS):
         raise LLMError(f"Codex CLI에서 현재 설정된 모델을 사용할 수 없어요: {detail}")
+    if any(marker in normalized for marker in CODEX_VERSION_ERROR_MARKERS):
+        raise LLMError(
+            "현재 Codex CLI 버전에서는 선택한 모델을 사용할 수 없어요. "
+            "`brew upgrade --cask codex`로 Codex를 업데이트한 뒤 앱을 다시 열어 주세요."
+        )
     if any(marker in normalized for marker in CODEX_LOGIN_ERROR_MARKERS):
         raise CodexConnectionError(CODEX_NOT_CONNECTED_MESSAGE)
     if any(marker in normalized for marker in CODEX_TOKEN_REFRESH_MARKERS):

@@ -721,6 +721,36 @@ class ProcessingTests(unittest.TestCase):
         self.assertIn("현재 설정된 모델", str(ctx.exception))
         self.assertIn("gpt-5.5", str(ctx.exception))
 
+    def test_codex_provider_reports_cli_upgrade_for_new_model_before_auth_noise(self) -> None:
+        error_text = (
+            "ERROR rmcp::transport::worker: Auth(TokenRefreshFailed("
+            "\"Server returned error response: invalid_grant: Invalid refresh token\"))\n"
+            "ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\","
+            "\"message\":\"The 'gpt-5.5' model requires a newer version of Codex. "
+            "Please upgrade to the latest app or CLI and try again.\"}}"
+        )
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = StringIO()
+                self.returncode = 1
+
+            def poll(self) -> int:
+                return self.returncode
+
+        def fake_popen(args, **kwargs):  # type: ignore[no-untyped-def]
+            kwargs["stderr"].write(error_text)
+            return FakeProcess()
+
+        provider = CodexCliProvider(command="/opt/homebrew/bin/codex")
+        with patch("codex_diary.llm.subprocess.Popen", side_effect=fake_popen):
+            with self.assertRaises(LLMError) as ctx:
+                provider.generate_markdown("prompt")
+
+        self.assertNotIsInstance(ctx.exception, CodexConnectionError)
+        self.assertIn("업데이트", str(ctx.exception))
+        self.assertIn("brew upgrade --cask codex", str(ctx.exception))
+
     def test_codex_provider_still_reports_true_login_failure_as_connection_error(self) -> None:
         class FakeProcess:
             def __init__(self) -> None:

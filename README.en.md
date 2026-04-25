@@ -9,13 +9,14 @@
 
 Turn Chronicle Markdown summaries into a daily work report and a diary-style reflection.
 
-**Model note: `gpt-5.5` is currently not supported through the local Codex CLI flow used by this app. Use `gpt-5.4` or another available model for now.**
+**Model note: `gpt-5.5` requires a recent Codex CLI. If it fails on an older version, run `brew upgrade --cask codex`, then reopen the app.**
 
 ## Requirements
 
 - macOS
 - Homebrew
 - Local `codex` CLI installed and logged in with `codex login`
+- Latest Codex CLI recommended when using `gpt-5.5`
 - Chronicle enabled in Codex settings
 - Chronicle Markdown summaries under `~/.codex/memories_extensions/chronicle/resources`
 

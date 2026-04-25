@@ -9,13 +9,14 @@
 
 Chronicle Markdown 요약을 하루 작업 보고서와 일기형 회고로 바꿔 주는 로컬 앱입니다.
 
-**모델 안내: 현재 이 앱이 사용하는 로컬 Codex CLI 흐름에서는 `gpt-5.5`가 지원되지 않습니다. 지금은 `gpt-5.4` 또는 사용 가능한 다른 모델을 선택해 주세요.**
+**모델 안내: `gpt-5.5`를 사용하려면 최신 Codex CLI가 필요합니다. 구버전에서 실패하면 `brew upgrade --cask codex`로 Codex를 업데이트한 뒤 앱을 다시 열어 주세요.**
 
 ## 요구 사항
 
 - macOS
 - Homebrew
 - 로컬 `codex` CLI 설치 및 `codex login` 완료
+- `gpt-5.5` 사용 시 Codex CLI 최신 버전 권장
 - Codex 설정에서 Chronicle 활성화
 - `~/.codex/memories_extensions/chronicle/resources` 아래 Chronicle Markdown 요약 존재
 
