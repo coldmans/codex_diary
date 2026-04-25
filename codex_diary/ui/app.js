@@ -140,6 +140,7 @@
     viewRequestId: 0,
     boundaryRequestId: 0,
     suppressNextClick: false,
+    effectiveTodayIso: null,
   };
 
   function currentUiOption(value = state.config.outputLanguage) {
@@ -204,11 +205,18 @@
   }
 
   function currentLoadingFallback(elapsedSeconds) {
-    const phaseIndex = 0;
+    const phaseIndex = LOADING_PHASES.reduce(
+      (current, phase, index) => (elapsedSeconds >= phase.minSeconds ? index : current),
+      0,
+    );
+    const progressFloor = phaseIndex === 0 ? 18 : phaseIndex === 1 ? 42 : 84;
+    const progressCeil = phaseIndex === 0 ? 34 : phaseIndex === 1 ? 78 : 96;
+    const phaseStart = LOADING_PHASES[phaseIndex].minSeconds || 0;
+    const phaseElapsed = Math.max(0, elapsedSeconds - phaseStart);
     return {
       phaseIndex,
       phase: LOADING_PHASES[phaseIndex],
-      percent: clamp(18 + Math.min(elapsedSeconds, 8) * 2, 8, 34),
+      percent: clamp(progressFloor + Math.min(phaseElapsed, 12) * 3, progressFloor, progressCeil),
       indeterminate: true,
       progress: null,
     };
@@ -545,7 +553,7 @@
   }
 
   function weekStartDay() {
-    return ["fr", "de", "es", "vi", "ru"].includes(currentUiLanguage()) ? 1 : 0;
+    return ["fr", "de", "es", "vi", "ru", "zh"].includes(currentUiLanguage()) ? 1 : 0;
   }
 
   function localTodayIso() {
@@ -569,7 +577,7 @@
     const modeLabel = t("generate.finalize");
     const iso = state.config.targetDate;
     if (!iso) return modeLabel;
-    if (iso === localTodayIso()) {
+    if (iso === (state.effectiveTodayIso || localTodayIso())) {
       return t("generate.todayFinalize");
     }
     return `${formatShortMonthDay(iso)} ${modeLabel}`;
@@ -665,6 +673,19 @@
           control.disabled = locked;
         }
       });
+  }
+
+  function syncOverflowActions() {
+    const copyButton = document.querySelector('[data-action="copy"]');
+    const externalButton = document.querySelector('[data-action="open-external"]');
+    if (copyButton instanceof HTMLButtonElement) {
+      copyButton.disabled = !state.data;
+      copyButton.title = state.data ? "" : t("toast.nothingToCopy");
+    }
+    if (externalButton instanceof HTMLButtonElement) {
+      externalButton.disabled = !state.data?.saved_path;
+      externalButton.title = state.data?.saved_path ? "" : t("toast.noSavedFile");
+    }
   }
 
   function extractHashtags(structured) {
@@ -1599,7 +1620,7 @@
 
   function renderMoodRow(iso) {
     const current = getMood(iso);
-    const options = el("div", { class: "mood__options" });
+    const options = el("div", { class: "mood__options", role: "group", "aria-label": t("mood.label") });
     MOOD_OPTIONS.forEach((opt) => {
       const localized = findMoodOption(opt.key) || opt;
       const active = current === opt.key;
@@ -1610,6 +1631,7 @@
           class: `mood__btn ${active ? "is-selected" : ""}`,
           title: localized.label,
           "aria-label": localized.label,
+          "aria-pressed": active ? "true" : "false",
           onClick: () => {
             const next = current === opt.key ? null : opt.key;
             setMood(iso, next);
@@ -2030,10 +2052,11 @@
 
     const weekdayRow = el("div", { class: "cal-weekdays" });
     weekdayLabels().forEach((label, idx) => {
+      const weekday = (weekStartDay() + idx) % 7;
       weekdayRow.appendChild(
         el(
           "div",
-          { class: `cal-weekdays__cell ${idx === 0 ? "is-sun" : idx === 6 ? "is-sat" : ""}` },
+          { class: `cal-weekdays__cell ${weekday === 0 ? "is-sun" : weekday === 6 ? "is-sat" : ""}` },
           label,
         ),
       );
@@ -2054,7 +2077,8 @@
       const saved = savedSet.has(iso);
       const meta = dateVisualMeta(iso, { saved });
       const active = iso === (state.selectedDateIso || state.config.targetDate);
-      const today = iso === localTodayIso();
+      const today = iso === (state.effectiveTodayIso || localTodayIso());
+      const title = dateTitleText(iso, { saved, mood: meta.mood });
       const classes = [
         "cal-cell",
         saved ? "has-entry" : "",
@@ -2071,7 +2095,9 @@
             type: "button",
             class: classes,
             style: meta.style || null,
-            title: dateTitleText(iso, { saved, mood: meta.mood }),
+            title,
+            "aria-label": title,
+            "aria-current": active ? "date" : null,
             onClick: () => {
               if (saved) {
                 state.nav = "diary";
@@ -2351,7 +2377,10 @@
 
   function setNavActive() {
     document.querySelectorAll(".side-nav__item").forEach((btn) => {
-      btn.classList.toggle("is-active", btn.dataset.nav === state.nav);
+      const active = btn.dataset.nav === state.nav;
+      btn.classList.toggle("is-active", active);
+      if (active) btn.setAttribute("aria-current", "page");
+      else btn.removeAttribute("aria-current");
     });
   }
 
@@ -2424,11 +2453,12 @@
     }
     const paperTop = document.querySelector(".paper__top");
     if (paperTop) {
-      const hiddenOnCalendar = state.nav === "calendar";
-      paperTop.hidden = hiddenOnCalendar;
-      paperTop.setAttribute("aria-hidden", String(hiddenOnCalendar));
-      if (hiddenOnCalendar && state.menuOpen) toggleMenu(false);
+      const hiddenOutsideDiary = state.nav !== "diary";
+      paperTop.hidden = hiddenOutsideDiary;
+      paperTop.setAttribute("aria-hidden", String(hiddenOutsideDiary));
+      if (hiddenOutsideDiary && state.menuOpen) toggleMenu(false);
     }
+    syncOverflowActions();
     renderCodexStatus();
     syncGenerateButton();
     syncMutableControls();
@@ -2436,7 +2466,10 @@
 
   function syncConfig(config) {
     if (!config) return;
-    if (config.target_date) state.config.targetDate = config.target_date;
+    if (config.target_date) {
+      state.config.targetDate = config.target_date;
+      if (!state.effectiveTodayIso) state.effectiveTodayIso = config.target_date;
+    }
     if (typeof config.boundary_hour === "number" && !state.boundaryPinned)
       state.config.boundaryHour = config.boundary_hour;
     if (typeof config.source_dir === "string" && !state.sourceDirPinned) state.config.sourceDir = config.source_dir;
@@ -2883,9 +2916,6 @@
         setWarning(payload.error);
         return;
       }
-      if (payload.output_language_code) {
-        setOutputLanguage(payload.output_language_code, { persist: false, rerender: false });
-      }
       state.data = payload;
       state.selectedDateIso = iso;
       state.selectedWeekStart = null;
@@ -3071,6 +3101,7 @@
       const iso = await bridge.today(state.config.boundaryHour);
       if (!iso) return;
       state.config.targetDate = iso;
+      state.effectiveTodayIso = iso;
       setCalendarCursor(iso);
       renderConfig();
       syncTargetDateView();
@@ -3097,6 +3128,7 @@
           if (requestId !== state.boundaryRequestId || state.config.boundaryHour !== next) return;
           if (iso) {
             state.config.targetDate = iso;
+            state.effectiveTodayIso = iso;
             setCalendarCursor(iso);
             renderConfig();
             syncTargetDateView();
@@ -3131,6 +3163,7 @@
       state.settingsLastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
     state.settingsOpen = nextOpen;
+    document.body.classList.toggle("is-settings-open", state.settingsOpen);
     const panel = $("#settings-panel");
     if (panel) {
       if (state.settingsOpen) {
@@ -3152,11 +3185,25 @@
       }
     }
     if (state.settingsOpen && state.menuOpen) toggleMenu(false);
+    syncSettingsModalState();
     const launcher = document.querySelector(".side-settings");
     if (launcher) launcher.setAttribute("aria-expanded", String(state.settingsOpen));
     if (!state.settingsOpen && panel?.contains(document.activeElement) && state.settingsLastFocus?.isConnected) {
       state.settingsLastFocus.focus({ preventScroll: true });
     }
+  }
+
+  function syncSettingsModalState() {
+    document.querySelectorAll(".sidebar, .main").forEach((node) => {
+      if (!(node instanceof HTMLElement)) return;
+      if (state.settingsOpen) {
+        node.setAttribute("aria-hidden", "true");
+        if ("inert" in node) node.inert = true;
+      } else {
+        node.removeAttribute("aria-hidden");
+        if ("inert" in node) node.inert = false;
+      }
+    });
   }
 
   function trapSettingsFocus(event) {
@@ -3186,6 +3233,11 @@
     if (menu) menu.hidden = !state.menuOpen;
     const btn = document.querySelector('[data-action="toggle-menu"]');
     if (btn) btn.setAttribute("aria-expanded", String(state.menuOpen));
+    if (state.menuOpen) {
+      requestAnimationFrame(() => {
+        menu?.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+      });
+    }
   }
 
   function bindWheelScroll(node) {

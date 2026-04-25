@@ -1,12 +1,14 @@
 import unittest
 from datetime import date
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import threading
 import time
 from unittest.mock import patch
 
 from codex_diary.app import (
     DiaryBridge,
+    build_readiness,
     build_weekly_overview,
     default_output_dir,
     extract_markdown_section,
@@ -618,6 +620,30 @@ class DiaryBridgeTests(unittest.TestCase):
         bridge = DiaryBridge()
         payload = bridge.load_date("1999-01-01", "/tmp/codex-diary-missing-dir")
         self.assertIn("error", payload)
+
+    def test_load_date_does_not_mutate_global_output_language(self) -> None:
+        bridge = DiaryBridge()
+        bridge.config.output_language_code = "en"
+        with TemporaryDirectory() as tmpdir:
+            out_dir = Path(tmpdir)
+            (out_dir / "2026-04-21.md").write_text(SAMPLE_MARKDOWN, encoding="utf-8")
+
+            payload = bridge.load_date("2026-04-21", str(out_dir))
+
+        self.assertEqual(payload["output_language_code"], "ko")
+        self.assertEqual(bridge.config.output_language_code, "en")
+
+    def test_readiness_counts_only_chronicle_summary_markdown(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source"
+            out = Path(tmpdir) / "out"
+            source.mkdir()
+            (source / "README.md").write_text("not chronicle", encoding="utf-8")
+            (source / "2026-04-21T05-00-00-abcd-10min-memory-summary.md").write_text("ok", encoding="utf-8")
+
+            payload = build_readiness(source, out)
+
+        self.assertEqual(payload["source_markdown_count"], 1)
 
     def test_load_week_returns_overview(self) -> None:
         bridge = DiaryBridge()

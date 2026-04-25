@@ -102,6 +102,22 @@ img {
   overflow: hidden;
 }
 
+.app::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: rgba(58, 47, 42, 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+body.is-settings-open .app::after {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* Sidebar ============================================================= */
 .sidebar {
   background: linear-gradient(180deg, rgba(255, 245, 240, 0.92) 0%, rgba(252, 225, 214, 0.92) 100%);
@@ -694,6 +710,11 @@ img {
   color: var(--ink);
   box-shadow: var(--shadow-xs);
   font-weight: 600;
+}
+
+.segmented input:focus-visible + span {
+  outline: 2px solid #b85140;
+  outline-offset: 2px;
 }
 
 .pill-btn {
@@ -2130,9 +2151,16 @@ img {
   border-radius: 999px;
   color: var(--ink-soft);
   font-size: 12.5px;
+  border-radius: var(--radius-lg);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .paper__foot-icon { font-size: 14px; }
+
+.paper__foot-hint span:last-child {
+  min-width: 0;
+}
 
 .status-warning {
   margin-top: 12px;

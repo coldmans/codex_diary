@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from .chronicle import resolve_target_date
+from .chronicle import SOURCE_PATTERN, resolve_target_date
 from .diary_length import (
     DEFAULT_DIARY_LENGTH_CODE,
     get_diary_length_option,
@@ -712,7 +712,11 @@ def build_readiness(source_dir: Path, out_dir: Path) -> dict[str, Any]:
     source_exists = source.exists() and source.is_dir()
     if source_exists:
         try:
-            source_count = sum(1 for _ in source.glob("*.md"))
+            source_count = sum(
+                1
+                for path in source.glob("*.md")
+                if path.is_file() and not path.is_symlink() and SOURCE_PATTERN.match(path.name)
+            )
         except OSError:
             source_count = 0
     return {
@@ -883,9 +887,9 @@ class DiaryBridge:
         if not status.available:
             detail = copy["codex_terminal"]
         elif status.connected:
-            detail = status.raw_output or copy["codex_connected_detail"]
+            detail = copy["codex_connected_detail"]
         else:
-            detail = status.raw_output or copy["codex_login_detail"]
+            detail = copy["codex_login_detail"]
         return {
             "available": status.available,
             "connected": status.connected,
@@ -1016,7 +1020,11 @@ class DiaryBridge:
             hour = int(boundary_hour)
         except (TypeError, ValueError):
             hour = self.config.boundary_hour
-        target = resolve_target_date(iso, day_boundary_hour=hour)
+        current_effective_today = resolve_target_date(None, day_boundary_hour=self.config.boundary_hour)
+        if iso == current_effective_today.isoformat():
+            target = resolve_target_date(None, day_boundary_hour=hour)
+        else:
+            target = resolve_target_date(iso, day_boundary_hour=hour)
         self.config.target_date = target
         self.config.boundary_hour = hour
         return target.isoformat()
@@ -1323,7 +1331,6 @@ class DiaryBridge:
             return {"error": bridge_copy(self.config.output_language_code)["missing_saved_diary"].format(date=iso)}
         markdown = path.read_text(encoding="utf-8")
         payload = render_payload(markdown)
-        self.config.output_language_code = payload["output_language_code"]
         payload.update(
             {
                 "target_date": iso,

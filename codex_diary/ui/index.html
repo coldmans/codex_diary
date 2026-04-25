@@ -121,12 +121,12 @@
 
             <div class="paper__top-right">
               <div class="paper__toolbar-meta">
-                <div id="codex-status" class="bridge-status" aria-live="polite">
+                <div id="codex-status" class="bridge-status">
                   <span class="bridge-status__dot"></span>
                   <select id="codex-model" class="bridge-status__select" aria-label="Codex model">
                     <option value="gpt-5.4">GPT-5.4</option>
                   </select>
-                  <span class="bridge-status__text">Checking Codex</span>
+                  <span class="bridge-status__text" role="status" aria-live="polite">Checking Codex</span>
                   <span class="bridge-status__detail">Please wait a moment.</span>
                   <button type="button" class="bridge-status__action" data-action="codex-connect">Connect</button>
                 </div>
@@ -143,7 +143,7 @@
                   <span class="spinner" hidden></span>
                 </button>
                 <div class="menu-wrap">
-                  <button type="button" class="round-btn round-btn--ghost" data-action="toggle-menu" title="More" aria-haspopup="menu" aria-controls="overflow-menu" aria-expanded="false">
+                  <button type="button" class="round-btn round-btn--ghost" data-action="toggle-menu" title="More" aria-controls="overflow-menu" aria-expanded="false">
                     <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
                       <circle cx="4.5" cy="10" r="1.3" fill="currentColor"/>
                       <circle cx="10" cy="10" r="1.3" fill="currentColor"/>
@@ -173,11 +173,11 @@
         <div id="status-warning" class="status-warning" role="alert" hidden></div>
       </main>
 
-      <aside id="settings-panel" class="settings" hidden role="dialog" aria-modal="true" aria-hidden="true" aria-label="Settings panel">
+      <aside id="settings-panel" class="settings" hidden role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="settings-title" aria-label="Settings panel">
         <div class="settings__head">
           <div class="settings__head-copy">
             <div class="settings__eyebrow">Preferences</div>
-            <div class="settings__title">Settings</div>
+            <div id="settings-title" class="settings__title">Settings</div>
           </div>
           <button type="button" class="round-btn round-btn--ghost" data-action="toggle-settings" title="Close">✕</button>
         </div>
