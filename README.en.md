@@ -13,7 +13,7 @@ Turn Chronicle Markdown summaries into a daily work report and a diary-style ref
 
 ## Requirements
 
-- macOS
+- macOS on Apple Silicon
 - Homebrew
 - Local `codex` CLI installed and logged in with `codex login`
 - Latest Codex CLI recommended when using `gpt-5.5`
@@ -39,6 +39,13 @@ brew install --cask codex-diary
 
 Then open `Codex Diary.app`, connect Codex if needed, choose a date, and create the entry.
 
+Update:
+
+```bash
+brew update
+brew upgrade --cask codex-diary
+```
+
 If you installed it before and want to test from a clean install:
 
 ```bash
@@ -54,6 +61,15 @@ If macOS still blocks first launch, run this once and open the app again:
 xattr -dr com.apple.quarantine "/Applications/Codex Diary.app"
 ```
 
+This workaround will be removed once the app is shipped with Developer ID notarization.
+
+## Privacy And Data Flow
+
+- The app reads Chronicle Markdown summaries only. It does not process raw recordings, screenshots, OCR JSONL, or images directly.
+- During generation, extracted content for the selected date is masked for obvious sensitive patterns, then sent to the local `codex` CLI for model execution.
+- Generated diaries plus app memos/tasks are stored as plaintext on your Mac. The default app output location is `~/Library/Application Support/Codex Diary/diary`.
+- Review public screenshots or shared diary files before publishing them.
+
 ## What It Creates
 
 - One Markdown entry per day
@@ -66,10 +82,13 @@ Chronicle `10min` summaries are used first. `6h` summaries are only secondary co
 
 ## CLI
 
+The Homebrew Cask installs the desktop app only. The CLI is for users who clone the repository or install the Python package directly.
+
 ```bash
 codex-diary --date 2026-04-21
 codex-diary --date 2026-04-21 --output-language ko
 codex-diary --date 2026-04-21 --length very-long
+codex-diary --date 2026-04-21 --codex-model gpt-5.5
 codex-diary --source-dir ~/.codex/memories_extensions/chronicle/resources
 codex-diary --out-dir ./custom-output --day-boundary-hour 4
 ```
@@ -83,6 +102,7 @@ Useful options:
 - `--day-boundary-hour <0-23>`
 - `--language <code>` or `--output-language <code>`
 - `--length short|medium|long|very-long`
+- `--codex-model <model>`
 
 ## Development
 
