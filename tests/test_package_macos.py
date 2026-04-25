@@ -72,6 +72,7 @@ class MacOSPackagingTests(unittest.TestCase):
         self.assertIn('cask "codex-diary" do', text)
         self.assertIn('sha256 "abc123"', text)
         self.assertIn("releases/download/v#{version}/Codex-Diary-#{version}-macOS.dmg", text)
+        self.assertIn("depends_on arch: :arm64", text)
         self.assertIn('xattr",', text)
         self.assertIn("com.apple.quarantine", text)
         self.assertIn('app "Codex Diary.app"', text)
@@ -227,6 +228,20 @@ class MacOSPackagingTests(unittest.TestCase):
             instructions = staging / opening_instructions_filename()
             self.assertTrue(instructions.exists())
             self.assertIn("Control-click", instructions.read_text(encoding="utf-8"))
+
+    def test_prepare_dmg_staging_can_omit_opening_instructions_for_notarized_release(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_app = root / "Codex Diary.app"
+            contents = source_app / "Contents"
+            contents.mkdir(parents=True)
+            (contents / "Info.plist").write_text("{}", encoding="utf-8")
+            staging = root / "stage"
+
+            prepare_dmg_staging(source_app, staging, include_opening_instructions=False)
+
+            self.assertTrue((staging / "Codex Diary.app").exists())
+            self.assertFalse((staging / opening_instructions_filename()).exists())
 
     def test_update_app_bundle_metadata(self) -> None:
         with TemporaryDirectory() as tmp:

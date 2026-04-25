@@ -8,6 +8,8 @@ cask "codex-diary" do
   desc "Generate diary drafts from Chronicle Markdown summaries"
   homepage "https://github.com/coldmans/codex_diary"
 
+  depends_on arch: :arm64
+
   app "Codex Diary.app"
 
   postflight do

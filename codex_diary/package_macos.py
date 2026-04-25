@@ -128,6 +128,8 @@ def build_homebrew_cask_text(
         '  desc "Generate diary drafts from Chronicle Markdown summaries"\n'
         f'  homepage "https://github.com/{repository}"\n'
         "\n"
+        "  depends_on arch: :arm64\n"
+        "\n"
         f'  app "{app_name}.app"\n'
         f"{postflight}"
         f"{caveats}"
@@ -432,7 +434,12 @@ def build_pyinstaller_app(
     return bundle
 
 
-def prepare_dmg_staging(app_bundle: Path, staging_dir: Path) -> Path:
+def prepare_dmg_staging(
+    app_bundle: Path,
+    staging_dir: Path,
+    *,
+    include_opening_instructions: bool = True,
+) -> Path:
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
     staging_dir.mkdir(parents=True, exist_ok=True)
@@ -445,8 +452,9 @@ def prepare_dmg_staging(app_bundle: Path, staging_dir: Path) -> Path:
         applications_link.unlink()
     applications_link.symlink_to("/Applications")
 
-    instructions = staging_dir / opening_instructions_filename()
-    instructions.write_text(opening_instructions_text(app_bundle.stem), encoding="utf-8")
+    if include_opening_instructions:
+        instructions = staging_dir / opening_instructions_filename()
+        instructions.write_text(opening_instructions_text(app_bundle.stem), encoding="utf-8")
     return copied_bundle
 
 
@@ -608,7 +616,7 @@ def run(argv: list[str] | None = None) -> int:
         return 0
 
     dmg_root = build_dir / "dmg-root"
-    prepare_dmg_staging(bundle, dmg_root)
+    prepare_dmg_staging(bundle, dmg_root, include_opening_instructions=not args.notarize)
     dmg_path = dist_dir / default_dmg_name(app_name, __version__)
     create_dmg(
         source_dir=dmg_root,
