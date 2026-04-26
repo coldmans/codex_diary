@@ -61,8 +61,6 @@ brew install --cask codex-diary
 xattr -dr com.apple.quarantine "/Applications/Codex Diary.app"
 ```
 
-Developer ID 공증이 완료되면 이 우회 안내는 제거할 예정입니다.
-
 ## 개인정보와 데이터 흐름
 
 - 앱은 Chronicle Markdown 요약만 읽고, 원본 녹화/이미지/OCR 파일은 직접 처리하지 않습니다.
@@ -113,34 +111,7 @@ pip install -e .
 python3 -m codex_diary.app
 ```
 
-## 공증된 배포 빌드
-
-Apple Developer Program 가입 후 `Developer ID Application` 인증서가 키체인에 있어야 합니다.
-
-```bash
-security find-identity -v -p codesigning
-```
-
-notarytool 인증 정보는 한 번만 저장하면 됩니다.
-
-```bash
-xcrun notarytool store-credentials codex-diary-notary \
-  --apple-id "you@example.com" \
-  --team-id "TEAMID" \
-  --password "app-specific-password"
-```
-
-서명, 공증, stapling, Homebrew Cask 체크섬 갱신을 한 번에 실행:
-
-```bash
-python3 -m codex_diary.package_macos \
-  --sign-identity "Developer ID Application: Your Name (TEAMID)" \
-  --notarize \
-  --notary-keychain-profile codex-diary-notary \
-  --write-homebrew-cask
-```
-
-검증:
+## 검증
 
 ```bash
 python3 -m unittest discover -s tests -v
