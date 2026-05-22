@@ -11,6 +11,33 @@ Chronicle Markdown 요약을 하루 작업 보고서와 일기형 회고로 바�
 
 **모델 안내: `gpt-5.5`를 사용하려면 최신 Codex CLI가 필요합니다. 구버전에서 실패하면 `brew upgrade --cask codex`로 Codex를 업데이트한 뒤 앱을 다시 열어 주세요.**
 
+## Portfolio Highlights
+
+- Codex Chronicle 요약을 읽어 날짜별 작업 보고서와 회고를 생성하는 macOS 로컬 앱/CLI입니다.
+- 원본 화면 녹화, 스크린샷, OCR JSONL을 직접 처리하지 않고 Chronicle Markdown 요약만 사용하도록 데이터 경계를 분리했습니다.
+- 민감정보 마스킹, 이벤트 추출, 중복 제거, 언어별 출력, 04:00 업무일 경계 처리를 구현했습니다.
+- Homebrew Cask 설치, 다국어 README, 앱/CLI 검증 명령, 개인정보 데이터 흐름 문서를 함께 정리했습니다.
+
+## Architecture
+
+```text
+Chronicle Markdown summaries
+  -> source discovery and day-boundary grouping
+  -> event extraction and deduplication
+  -> sensitive-pattern masking
+  -> local Codex CLI generation
+  -> Markdown diary/report output
+  -> pywebview desktop UI
+```
+
+## My Role
+
+- Chronicle summary parser and diary generation pipeline implementation
+- macOS desktop app UI bridge with `pywebview`
+- CLI options for date, language, output length, source directory, and model selection
+- Homebrew Cask packaging and release-oriented documentation
+- Unit tests for CLI, app helpers, diary structure, Markdown rendering, and macOS packaging
+
 ## 요구 사항
 
 - macOS Apple Silicon
