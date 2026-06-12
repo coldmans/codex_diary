@@ -11,7 +11,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from .chronicle import SOURCE_PATTERN, resolve_target_date
+from .chronicle import (
+    DEFAULT_CHRONICLE_SOURCE_DIR,
+    count_chronicle_summary_files,
+    default_source_dir as default_chronicle_source_dir,
+    is_legacy_default_source_dir,
+    resolve_target_date,
+)
 from .diary_length import (
     DEFAULT_DIARY_LENGTH_CODE,
     get_diary_length_option,
@@ -40,11 +46,19 @@ from .llm import (
 )
 from .markdown_html import render_markdown
 
-DEFAULT_SOURCE_DIR = "~/.codex/memories_extensions/chronicle/resources"
 APP_NAME = "Codex Diary"
 WINDOW_TITLE = "Codex Diary"
 WINDOW_SIZE = (1280, 860)
 WINDOW_MIN = (1040, 720)
+PREFERENCES_FILE = "settings.json"
+PERSISTED_CONFIG_KEYS = (
+    "boundary_hour",
+    "source_dir",
+    "out_dir",
+    "output_language_code",
+    "diary_length_code",
+    "codex_model",
+)
 PROGRESS_PHASE_KEYS = {
     "collect": ("loading.step.collect", "loading.detail.collect"),
     "organize": ("loading.step.organize", "loading.detail.organize"),
@@ -399,6 +413,89 @@ def default_output_dir() -> Path:
     return repository_root() / "output" / "diary"
 
 
+def preferences_path() -> Path:
+    return application_support_root() / PREFERENCES_FILE
+
+
+def read_user_preferences() -> dict[str, Any]:
+    path = preferences_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_user_preferences(preferences: dict[str, Any]) -> None:
+    path = preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(preferences, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def normalize_user_preferences(
+    raw: dict[str, Any],
+    *,
+    migrate_legacy_default: bool = False,
+) -> dict[str, Any]:
+    preferences: dict[str, Any] = {}
+
+    language = None
+    for key in ("output_language_code", "language_code", "language", "locale"):
+        language = normalize_language_code(raw.get(key))
+        if language:
+            break
+    if language:
+        preferences["output_language_code"] = language
+
+    diary_length = None
+    for key in ("diary_length_code", "diary_length", "length"):
+        diary_length = normalize_diary_length(raw.get(key))
+        if diary_length:
+            break
+    if diary_length:
+        preferences["diary_length_code"] = diary_length
+
+    codex_model = None
+    for key in ("codex_model", "model", "llm_model"):
+        try:
+            codex_model = normalize_codex_model(raw.get(key))
+        except Exception:
+            codex_model = None
+        if codex_model:
+            break
+    if codex_model:
+        preferences["codex_model"] = codex_model
+
+    try:
+        boundary_hour = int(raw.get("boundary_hour"))
+    except (TypeError, ValueError):
+        boundary_hour = None
+    if boundary_hour is not None and 0 <= boundary_hour <= 23:
+        preferences["boundary_hour"] = boundary_hour
+
+    source_raw = raw.get("source_dir")
+    if source_raw:
+        source_dir = Path(str(source_raw)).expanduser()
+        modern_dir = Path(DEFAULT_CHRONICLE_SOURCE_DIR).expanduser()
+        should_migrate_legacy = (
+            migrate_legacy_default
+            and is_legacy_default_source_dir(source_dir)
+            and count_chronicle_summary_files(modern_dir) > 0
+        )
+        if not should_migrate_legacy:
+            preferences["source_dir"] = source_dir
+
+    out_raw = raw.get("out_dir")
+    if out_raw:
+        preferences["out_dir"] = Path(str(out_raw)).expanduser()
+
+    return preferences
+
+
+def load_user_preferences() -> dict[str, Any]:
+    return normalize_user_preferences(read_user_preferences(), migrate_legacy_default=True)
+
+
 def ui_assets_dir() -> Path:
     if is_frozen_app():
         bundled = Path(getattr(sys, "_MEIPASS", repository_root())) / "codex_diary" / "ui"
@@ -708,17 +805,8 @@ def list_saved_entries(out_dir: Path) -> dict[str, list[dict[str, str]]]:
 def build_readiness(source_dir: Path, out_dir: Path) -> dict[str, Any]:
     source = source_dir.expanduser()
     output = out_dir.expanduser()
-    source_count = 0
     source_exists = source.exists() and source.is_dir()
-    if source_exists:
-        try:
-            source_count = sum(
-                1
-                for path in source.glob("*.md")
-                if path.is_file() and not path.is_symlink() and SOURCE_PATTERN.match(path.name)
-            )
-        except OSError:
-            source_count = 0
+    source_count = count_chronicle_summary_files(source)
     return {
         "source_dir": str(source),
         "source_exists": source_exists,
@@ -738,10 +826,10 @@ class AppConfig:
     diary_length_code: str
     codex_model: str
 
-    def to_json(self) -> dict[str, Any]:
+    def to_json(self, persisted_preferences: dict[str, bool] | None = None) -> dict[str, Any]:
         language = get_language_option(self.output_language_code)
         diary_length = get_diary_length_option(self.diary_length_code)
-        return {
+        payload = {
             "target_date": self.target_date.isoformat(),
             "boundary_hour": self.boundary_hour,
             "source_dir": str(self.source_dir.expanduser()),
@@ -752,21 +840,30 @@ class AppConfig:
             "diary_length": diary_length.label,
             "codex_model": self.codex_model,
         }
+        if persisted_preferences is not None:
+            payload["persisted_preferences"] = dict(persisted_preferences)
+        return payload
 
 
 class DiaryBridge:
     """Methods in this class are exposed to the WebView JavaScript runtime."""
 
     def __init__(self) -> None:
+        preferences = load_user_preferences()
+        boundary_hour = preferences.get("boundary_hour", 4)
         self.config = AppConfig(
-            target_date=resolve_target_date(None, day_boundary_hour=4),
-            boundary_hour=4,
-            source_dir=Path(DEFAULT_SOURCE_DIR).expanduser(),
-            out_dir=default_output_dir(),
-            output_language_code=DEFAULT_LANGUAGE_CODE,
-            diary_length_code=DEFAULT_DIARY_LENGTH_CODE,
-            codex_model=default_codex_model(),
+            target_date=resolve_target_date(None, day_boundary_hour=boundary_hour),
+            boundary_hour=boundary_hour,
+            source_dir=preferences.get("source_dir") or default_chronicle_source_dir(),
+            out_dir=preferences.get("out_dir") or default_output_dir(),
+            output_language_code=preferences.get("output_language_code") or DEFAULT_LANGUAGE_CODE,
+            diary_length_code=preferences.get("diary_length_code") or DEFAULT_DIARY_LENGTH_CODE,
+            codex_model=preferences.get("codex_model") or default_codex_model(),
         )
+        self._persisted_preferences = {
+            key: key in preferences
+            for key in PERSISTED_CONFIG_KEYS
+        }
         self._generation_lock = threading.Lock()
         self._progress_lock = threading.Lock()
         self._cancel_requested = threading.Event()
@@ -781,6 +878,40 @@ class DiaryBridge:
             mode="finalize",
             stats={"diary_length": self.config.diary_length_code},
         )
+
+    def _config_payload(self) -> dict[str, Any]:
+        return self.config.to_json(persisted_preferences=self._persisted_preferences)
+
+    def _save_preferences(self) -> None:
+        preferences = {
+            "version": 1,
+            "boundary_hour": self.config.boundary_hour,
+            "source_dir": str(self.config.source_dir.expanduser()),
+            "out_dir": str(self.config.out_dir.expanduser()),
+            "output_language_code": self.config.output_language_code,
+            "diary_length_code": self.config.diary_length_code,
+            "codex_model": self.config.codex_model,
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        write_user_preferences(preferences)
+        self._persisted_preferences = {
+            key: True
+            for key in PERSISTED_CONFIG_KEYS
+        }
+
+    def _apply_preference_updates(self, updates: dict[str, Any]) -> None:
+        if "boundary_hour" in updates:
+            self.config.boundary_hour = updates["boundary_hour"]
+        if "source_dir" in updates:
+            self.config.source_dir = updates["source_dir"]
+        if "out_dir" in updates:
+            self.config.out_dir = updates["out_dir"]
+        if "output_language_code" in updates:
+            self.config.output_language_code = updates["output_language_code"]
+        if "diary_length_code" in updates:
+            self.config.diary_length_code = updates["diary_length_code"]
+        if "codex_model" in updates:
+            self.config.codex_model = updates["codex_model"]
 
     def attach_window(self, window) -> None:
         self._window = window
@@ -975,7 +1106,7 @@ class DiaryBridge:
         codex = self._codex_status_details()
         copy = bridge_copy(self.config.output_language_code)
         return {
-            "config": self.config.to_json(),
+            "config": self._config_payload(),
             "entries": list_saved_entries(self.config.out_dir),
             "status": codex["message"] if not codex["connected"] else copy["ready_status"],
             "codex": codex,
@@ -1005,6 +1136,16 @@ class DiaryBridge:
         output = Path(out_dir).expanduser() if out_dir else self.config.out_dir
         return build_readiness(source, output)
 
+    def update_preferences(self, payload: dict[str, Any]) -> dict[str, Any]:
+        updates = normalize_user_preferences(payload, migrate_legacy_default=False)
+        self._apply_preference_updates(updates)
+        self._save_preferences()
+        return {
+            "config": self._config_payload(),
+            "readiness": build_readiness(self.config.source_dir, self.config.out_dir),
+            "entries": list_saved_entries(self.config.out_dir),
+        }
+
     def today(self, boundary_hour: int) -> str:
         try:
             hour = int(boundary_hour)
@@ -1013,6 +1154,7 @@ class DiaryBridge:
         target = resolve_target_date(None, day_boundary_hour=hour)
         self.config.target_date = target
         self.config.boundary_hour = hour
+        self._save_preferences()
         return target.isoformat()
 
     def recompute_target(self, iso: str, boundary_hour: int) -> str:
@@ -1027,6 +1169,7 @@ class DiaryBridge:
             target = resolve_target_date(iso, day_boundary_hour=hour)
         self.config.target_date = target
         self.config.boundary_hour = hour
+        self._save_preferences()
         return target.isoformat()
 
     # ---- File picking & external open ----------------------------------
@@ -1048,6 +1191,8 @@ class DiaryBridge:
             self.config.source_dir = chosen
         elif kind == "out":
             self.config.out_dir = chosen
+        if kind in {"source", "out"}:
+            self._save_preferences()
         return str(chosen)
 
     def open_external(self, path_str: str) -> bool:
@@ -1381,7 +1526,7 @@ class DiaryBridge:
             boundary = 4
         boundary = max(0, min(23, boundary))
         mode = "finalize"
-        source_dir = Path(str(payload.get("source_dir") or DEFAULT_SOURCE_DIR)).expanduser()
+        source_dir = Path(str(payload.get("source_dir"))).expanduser() if payload.get("source_dir") else default_chronicle_source_dir()
         out_dir = Path(str(payload.get("out_dir") or default_output_dir())).expanduser()
         language_code = None
         for key in (

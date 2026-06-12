@@ -18,7 +18,7 @@ Turn Chronicle Markdown summaries into a daily work report and a diary-style ref
 - Local `codex` CLI installed and logged in with `codex login`
 - Latest Codex CLI recommended when using `gpt-5.5`
 - Chronicle enabled in Codex settings
-- Chronicle Markdown summaries under `~/.codex/memories_extensions/chronicle/resources`
+- Chronicle Markdown summaries under `~/.codex/memories/extensions/chronicle/resources`
 
 Codex Diary reads Chronicle summary Markdown only. It does not process raw screen recordings, screenshots, OCR JSONL, or images directly.
 
@@ -87,7 +87,7 @@ codex-diary --date 2026-04-21
 codex-diary --date 2026-04-21 --output-language ko
 codex-diary --date 2026-04-21 --length very-long
 codex-diary --date 2026-04-21 --codex-model gpt-5.5
-codex-diary --source-dir ~/.codex/memories_extensions/chronicle/resources
+codex-diary --source-dir ~/.codex/memories/extensions/chronicle/resources
 codex-diary --out-dir ./custom-output --day-boundary-hour 4
 ```
 

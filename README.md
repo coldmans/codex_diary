@@ -45,7 +45,7 @@ Chronicle Markdown summaries
 - 로컬 `codex` CLI 설치 및 `codex login` 완료
 - `gpt-5.5` 사용 시 Codex CLI 최신 버전 권장
 - Codex 설정에서 Chronicle 활성화
-- `~/.codex/memories_extensions/chronicle/resources` 아래 Chronicle Markdown 요약 존재
+- `~/.codex/memories/extensions/chronicle/resources` 아래 Chronicle Markdown 요약 존재
 
 Codex Diary는 Chronicle 요약 Markdown만 읽습니다. 원본 화면 녹화, 스크린샷, OCR JSONL, 이미지는 직접 처리하지 않습니다.
 
@@ -114,7 +114,7 @@ codex-diary --date 2026-04-21
 codex-diary --date 2026-04-21 --output-language ko
 codex-diary --date 2026-04-21 --length very-long
 codex-diary --date 2026-04-21 --codex-model gpt-5.5
-codex-diary --source-dir ~/.codex/memories_extensions/chronicle/resources
+codex-diary --source-dir ~/.codex/memories/extensions/chronicle/resources
 codex-diary --out-dir ./custom-output --day-boundary-hour 4
 ```
 

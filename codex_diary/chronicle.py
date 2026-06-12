@@ -10,8 +10,43 @@ from .models import ChronicleSource
 SOURCE_PATTERN = re.compile(
     r"(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-[A-Za-z0-9]+-(?P<granularity>10min|6h)-memory-summary\.md$"
 )
+DEFAULT_CHRONICLE_SOURCE_DIR = "~/.codex/memories/extensions/chronicle/resources"
+LEGACY_CHRONICLE_SOURCE_DIR = "~/.codex/memories_extensions/chronicle/resources"
+CHRONICLE_SOURCE_DIRS = (
+    DEFAULT_CHRONICLE_SOURCE_DIR,
+    LEGACY_CHRONICLE_SOURCE_DIR,
+)
 DATE_FORMAT = "%Y-%m-%d"
 STAMP_FORMAT = "%Y-%m-%dT%H-%M-%S"
+
+
+def count_chronicle_summary_files(source_dir: Path) -> int:
+    source = source_dir.expanduser()
+    if not (source.exists() and source.is_dir()):
+        return 0
+    try:
+        return sum(
+            1
+            for path in source.glob("*.md")
+            if path.is_file() and not path.is_symlink() and SOURCE_PATTERN.match(path.name)
+        )
+    except OSError:
+        return 0
+
+
+def default_source_dir(candidates: Iterable[str | Path] = CHRONICLE_SOURCE_DIRS) -> Path:
+    expanded = [Path(str(candidate)).expanduser() for candidate in candidates]
+    for path in expanded:
+        if count_chronicle_summary_files(path) > 0:
+            return path
+    for path in expanded:
+        if path.exists() and path.is_dir():
+            return path
+    return Path(DEFAULT_CHRONICLE_SOURCE_DIR).expanduser()
+
+
+def is_legacy_default_source_dir(path: str | Path) -> bool:
+    return Path(str(path)).expanduser() == Path(LEGACY_CHRONICLE_SOURCE_DIR).expanduser()
 
 
 def get_local_timezone() -> tzinfo:

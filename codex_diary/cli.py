@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from .chronicle import resolve_target_date
+from .chronicle import default_source_dir, resolve_target_date
 from .diary_length import (
     DEFAULT_DIARY_LENGTH_CODE,
     normalize_diary_length,
@@ -307,7 +307,7 @@ def build_parser(language_code: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--source-dir",
-        default="~/.codex/memories_extensions/chronicle/resources",
+        default=str(default_source_dir()),
         help=copy["source_dir_help"],
     )
     parser.add_argument(

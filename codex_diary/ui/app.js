@@ -35,6 +35,7 @@
   const AUTO_SAVE_KEY = "codex-diary:auto-save:v1";
   const SOURCE_DIR_KEY = "codex-diary:source-dir:v1";
   const OUT_DIR_KEY = "codex-diary:out-dir:v1";
+  const LEGACY_SOURCE_DIR_FRAGMENT = ".codex/memories_extensions/chronicle/resources";
   const RUNTIME_STYLE_ID = "codex-diary-runtime-style";
   const OUTPUT_LANGUAGES = [
     { key: "en", label: "English", nativeLabel: "English", locale: "en-US" },
@@ -1131,12 +1132,45 @@
     return codexModelOptions().find((option) => option.key === key) || { key, label: key };
   }
 
+  function isLegacyDefaultSourceDir(value) {
+    return String(value || "").includes(LEGACY_SOURCE_DIR_FRAGMENT);
+  }
+
+  function currentPreferencesPayload() {
+    return {
+      boundary_hour: state.config.boundaryHour,
+      source_dir: state.config.sourceDir,
+      out_dir: state.config.outDir,
+      output_language_code: getOutputLanguageOption().key,
+      diary_length_code: getDiaryLengthOption().key,
+      codex_model: getCodexModelOption().key,
+    };
+  }
+
+  async function persistPreferences() {
+    const bridge = api();
+    if (!bridge || !bridge.update_preferences) return;
+    try {
+      const payload = await bridge.update_preferences(currentPreferencesPayload());
+      if (payload?.config) syncConfig(payload.config);
+      if (payload?.readiness) syncReadiness(payload.readiness);
+      if (payload?.entries) {
+        state.dates = payload.entries.dates || [];
+        state.weeks = payload.entries.weeks || [];
+        renderSideDates();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   function setOutputLanguage(value, { persist = true, rerender = true } = {}) {
     const option = getOutputLanguageOption(value);
     state.config.outputLanguage = option.key;
     if (persist) {
       writeTextStorage(OUTPUT_LANGUAGE_KEY, option.key);
       state.languagePinned = true;
+      persistPreferences();
     }
     applyStaticUiCopy();
     renderConfig();
@@ -1150,6 +1184,7 @@
     if (persist) {
       writeTextStorage(DIARY_LENGTH_KEY, option.key);
       state.diaryLengthPinned = true;
+      persistPreferences();
     }
     renderConfig();
   }
@@ -1160,6 +1195,7 @@
     if (persist) {
       writeTextStorage(CODEX_MODEL_KEY, option.key);
       state.codexModelPinned = true;
+      persistPreferences();
     }
     renderConfig();
     syncCodexStatus(state.codex);
@@ -1171,8 +1207,10 @@
     const storedCodexModel = normalizeCodexModelKey(readTextStorage(CODEX_MODEL_KEY));
     const storedBoundary = Number(readTextStorage(BOUNDARY_HOUR_KEY));
     const storedAutoSave = readTextStorage(AUTO_SAVE_KEY);
-    const storedSourceDir = readTextStorage(SOURCE_DIR_KEY).trim();
+    const storedSourceDirRaw = readTextStorage(SOURCE_DIR_KEY).trim();
+    const storedSourceDir = isLegacyDefaultSourceDir(storedSourceDirRaw) ? "" : storedSourceDirRaw;
     const storedOutDir = readTextStorage(OUT_DIR_KEY).trim();
+    if (storedSourceDirRaw && !storedSourceDir) writeTextStorage(SOURCE_DIR_KEY, "");
     state.languagePinned = Boolean(storedLanguage);
     state.diaryLengthPinned = Boolean(storedLength);
     state.codexModelPinned = Boolean(storedCodexModel);
@@ -2466,14 +2504,32 @@
 
   function syncConfig(config) {
     if (!config) return;
+    const persisted = config.persisted_preferences || {};
     if (config.target_date) {
       state.config.targetDate = config.target_date;
       if (!state.effectiveTodayIso) state.effectiveTodayIso = config.target_date;
     }
-    if (typeof config.boundary_hour === "number" && !state.boundaryPinned)
+    if (typeof config.boundary_hour === "number" && (!state.boundaryPinned || persisted.boundary_hour)) {
       state.config.boundaryHour = config.boundary_hour;
-    if (typeof config.source_dir === "string" && !state.sourceDirPinned) state.config.sourceDir = config.source_dir;
-    if (typeof config.out_dir === "string" && !state.outDirPinned) state.config.outDir = config.out_dir;
+      if (persisted.boundary_hour) {
+        writeTextStorage(BOUNDARY_HOUR_KEY, String(config.boundary_hour));
+        state.boundaryPinned = true;
+      }
+    }
+    if (typeof config.source_dir === "string" && (!state.sourceDirPinned || persisted.source_dir)) {
+      state.config.sourceDir = config.source_dir;
+      if (persisted.source_dir) {
+        writeTextStorage(SOURCE_DIR_KEY, config.source_dir);
+        state.sourceDirPinned = true;
+      }
+    }
+    if (typeof config.out_dir === "string" && (!state.outDirPinned || persisted.out_dir)) {
+      state.config.outDir = config.out_dir;
+      if (persisted.out_dir) {
+        writeTextStorage(OUT_DIR_KEY, config.out_dir);
+        state.outDirPinned = true;
+      }
+    }
     const language =
       normalizeLanguageKey(config.output_language_code) ||
       normalizeLanguageKey(config.target_language_code) ||
@@ -2483,17 +2539,35 @@
       normalizeLanguageKey(config.preferred_language) ||
       normalizeLanguageKey(config.language) ||
       normalizeLanguageKey(config.locale);
-    if (language && !state.languagePinned) state.config.outputLanguage = language;
+    if (language && (!state.languagePinned || persisted.output_language_code)) {
+      state.config.outputLanguage = language;
+      if (persisted.output_language_code) {
+        writeTextStorage(OUTPUT_LANGUAGE_KEY, language);
+        state.languagePinned = true;
+      }
+    }
     const diaryLength =
       normalizeDiaryLengthKey(config.diary_length_code) ||
       normalizeDiaryLengthKey(config.diary_length) ||
       normalizeDiaryLengthKey(config.length);
-    if (diaryLength && !state.diaryLengthPinned) state.config.diaryLength = diaryLength;
+    if (diaryLength && (!state.diaryLengthPinned || persisted.diary_length_code)) {
+      state.config.diaryLength = diaryLength;
+      if (persisted.diary_length_code) {
+        writeTextStorage(DIARY_LENGTH_KEY, diaryLength);
+        state.diaryLengthPinned = true;
+      }
+    }
     const codexModel =
       normalizeCodexModelKey(config.codex_model) ||
       normalizeCodexModelKey(config.selected_model) ||
       normalizeCodexModelKey(config.configured_model);
-    if (codexModel && !state.codexModelPinned) state.config.codexModel = codexModel;
+    if (codexModel && (!state.codexModelPinned || persisted.codex_model)) {
+      state.config.codexModel = codexModel;
+      if (persisted.codex_model) {
+        writeTextStorage(CODEX_MODEL_KEY, codexModel);
+        state.codexModelPinned = true;
+      }
+    }
     renderConfig();
   }
 
@@ -3026,6 +3100,7 @@
     writeTextStorage(kind === "source" ? SOURCE_DIR_KEY : OUT_DIR_KEY, picked);
     if (kind === "source") state.sourceDirPinned = true;
     else state.outDirPinned = true;
+    await persistPreferences();
     renderConfig();
     await refreshReadiness({ rerender: true });
     await refreshLists();
@@ -3119,6 +3194,7 @@
     state.config.boundaryHour = next;
     writeTextStorage(BOUNDARY_HOUR_KEY, String(next));
     state.boundaryPinned = true;
+    persistPreferences();
     renderConfig();
     const bridge = api();
     if (bridge && state.config.targetDate) {

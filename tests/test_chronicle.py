@@ -6,6 +6,7 @@ import unittest
 
 from codex_diary.chronicle import (
     apply_day_boundary,
+    default_source_dir,
     discover_sources,
     parse_source_filename,
     resolve_target_date,
@@ -63,6 +64,29 @@ class ChronicleParsingTests(unittest.TestCase):
             )
 
         self.assertEqual(matched, [])
+
+    def test_default_source_dir_prefers_first_candidate_with_summaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            modern = root / "memories" / "extensions" / "chronicle" / "resources"
+            legacy = root / "memories_extensions" / "chronicle" / "resources"
+            modern.mkdir(parents=True)
+            legacy.mkdir(parents=True)
+            (modern / "2026-06-06T14-02-00-abcd-10min-memory-summary.md").write_text("modern", encoding="utf-8")
+            (legacy / "2026-04-27T10-39-00-wxyz-10min-memory-summary.md").write_text("legacy", encoding="utf-8")
+
+            self.assertEqual(default_source_dir((modern, legacy)), modern)
+
+    def test_default_source_dir_falls_back_to_legacy_candidate_with_summaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            modern = root / "memories" / "extensions" / "chronicle" / "resources"
+            legacy = root / "memories_extensions" / "chronicle" / "resources"
+            modern.mkdir(parents=True)
+            legacy.mkdir(parents=True)
+            (legacy / "2026-04-27T10-39-00-wxyz-10min-memory-summary.md").write_text("legacy", encoding="utf-8")
+
+            self.assertEqual(default_source_dir((modern, legacy)), legacy)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import unittest
+import json
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -271,6 +272,16 @@ class DiaryBridgeTests(unittest.TestCase):
         "detail": "로그인 상태가 정상이에요.",
     }
 
+    def setUp(self) -> None:
+        self._support_tmp = TemporaryDirectory()
+        self._support_root = Path(self._support_tmp.name) / "support"
+        self._support_patch = patch("codex_diary.app.application_support_root", return_value=self._support_root)
+        self._support_patch.start()
+
+    def tearDown(self) -> None:
+        self._support_patch.stop()
+        self._support_tmp.cleanup()
+
     def test_get_state_includes_codex_status(self) -> None:
         bridge = DiaryBridge()
         bridge.config.output_language_code = "ko"
@@ -287,6 +298,23 @@ class DiaryBridgeTests(unittest.TestCase):
         self.assertEqual(payload["progress"]["status"], "idle")
         self.assertEqual(payload["progress"]["percent"], 0)
         self.assertEqual(payload["config"]["diary_length_code"], "short")
+
+    def test_bridge_loads_persisted_language_preference(self) -> None:
+        self._support_root.mkdir(parents=True)
+        (self._support_root / "settings.json").write_text(
+            json.dumps({"output_language_code": "ko"}),
+            encoding="utf-8",
+        )
+        bridge = DiaryBridge()
+
+        self.assertEqual(bridge.config.output_language_code, "ko")
+
+    def test_update_preferences_persists_language_for_next_launch(self) -> None:
+        bridge = DiaryBridge()
+        bridge.update_preferences({"output_language_code": "ko"})
+        next_bridge = DiaryBridge()
+
+        self.assertEqual(next_bridge.config.output_language_code, "ko")
 
     def test_generate_returns_views_and_saves_file(self) -> None:
         bridge = DiaryBridge()
