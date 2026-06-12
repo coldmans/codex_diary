@@ -9,7 +9,11 @@
 
 Turn Chronicle Markdown summaries into a daily work report and a diary-style reflection.
 
+**When you cannot remember what you did with Codex yesterday, Codex Diary turns local Chronicle summaries into a private work journal.**
+
 **Model note: `gpt-5.5` requires a recent Codex CLI. If it fails on an older version, run `brew upgrade --cask codex`, then reopen the app.**
+
+Copy-ready launch posts are in the [Launch Kit](docs/launch-kit.md).
 
 ## Requirements
 

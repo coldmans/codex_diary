@@ -9,7 +9,11 @@
 
 Chronicle Markdown 요약을 하루 작업 보고서와 일기형 회고로 바꿔 주는 로컬 앱입니다.
 
+**어제 Codex로 뭘 했는지 기억나지 않을 때, 로컬 Chronicle 요약을 개인 작업 일기로 바꿉니다.**
+
 **모델 안내: `gpt-5.5`를 사용하려면 최신 Codex CLI가 필요합니다. 구버전에서 실패하면 `brew upgrade --cask codex`로 Codex를 업데이트한 뒤 앱을 다시 열어 주세요.**
+
+공유/런치용 문구는 [Launch Kit](docs/launch-kit.md)에 모아두었습니다.
 
 ## Portfolio Highlights
 
